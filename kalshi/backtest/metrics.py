@@ -95,7 +95,8 @@ def z_vs_implied(obs: list) -> float:
 def max_drawdown(obs: list) -> float:
     """Maximum drawdown of the NO-side PnL equity curve.
 
-    Each observation contributes +no_price (win) or -no_price (loss).
+    A NO contract costs no_price and settles at $1 (win) or $0 (loss), so each
+    observation contributes +(1 - no_price) on a win or -no_price on a loss.
     Fees are not subtracted here (use ev_per_contract for fee-adjusted EV).
     Returns 0.0 for empty samples.
     """
@@ -107,7 +108,7 @@ def max_drawdown(obs: list) -> float:
     for o in obs:
         no_price = _val(o, "no_price")
         won      = _val(o, "no_won")
-        equity  += no_price if won else -no_price
+        equity  += (1.0 - no_price) if won else -no_price
         if equity > peak:
             peak = equity
         dd = peak - equity

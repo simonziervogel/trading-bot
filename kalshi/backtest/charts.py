@@ -24,7 +24,8 @@ _SEGMENTS = ["us_open_burst", "us_session", "eu_session", "off_hours"]
 def equity_curve(obs: list, title: str = "Equity Curve — NO side"):
     """Cumulative NO-side PnL over entry time.
 
-    Each trade contributes +no_price (win) or -no_price (loss).
+    A NO contract costs no_price and settles at $1 (win) or $0 (loss), so each
+    trade contributes +(1 - no_price) on a win or -no_price on a loss.
     Returns a matplotlib Figure.
     """
     import matplotlib.pyplot as plt
@@ -42,7 +43,7 @@ def equity_curve(obs: list, title: str = "Equity Curve — NO side"):
     for o in sorted_obs:
         no_price = _val(o, "no_price")
         won      = _val(o, "no_won")
-        equity  += no_price if won else -no_price
+        equity  += (1.0 - no_price) if won else -no_price
         xs.append(_val(o, "entry_time_utc"))
         ys.append(equity)
 
