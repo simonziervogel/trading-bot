@@ -4,6 +4,8 @@ from datetime import datetime, timezone, timedelta
 
 from kalshi.strategies.longshot import FavoriteLongshotStrategy
 from kalshi.strategies.mean_reversion import MeanReversionStrategy
+from kalshi.strategies.fair_value import FairValueStrategy
+from kalshi.strategies.momentum import MomentumStrategy
 
 
 # ---------------------------------------------------------------------------
@@ -143,3 +145,148 @@ class TestMeanReversionStrategy:
         assert cfg["strategy"] == "mean_reversion"
         assert "take_profit_cents" in cfg
         assert "stop_loss_cents" in cfg
+
+
+# ---------------------------------------------------------------------------
+# FairValueStrategy
+# ---------------------------------------------------------------------------
+
+def _make_fv_quotes(ticker, yes_bid, yes_ask, no_bid, no_ask,
+                    floor_strike=64000.0, strike_type="greater_or_equal",
+                    close_time_utc=None):
+    if close_time_utc is None:
+        close_time_utc = datetime.now(timezone.utc) + timedelta(minutes=8)
+    return {
+        ticker: {
+            "yes_bid_dollars": yes_bid, "yes_ask_dollars": yes_ask,
+            "no_bid_dollars":  no_bid,  "no_ask_dollars":  no_ask,
+            "floor_strike":    floor_strike, "strike_type": strike_type,
+            "close_time":      close_time_utc.isoformat(),
+        }
+    }
+
+
+# Synthetic, slightly-noisy 1-min close series so realized_vol_annualized()
+# returns a finite positive number without hitting the network.
+_FAKE_CLOSES = [65000, 65010, 64995, 65005, 65020, 65000, 64990, 65010, 65005]
+
+
+class TestFairValueStrategy:
+    def setup_method(self, monkeypatch=None):
+        self.strategy = FairValueStrategy(min_edge_pct=0.03)
+
+    def _patch_binance(self, monkeypatch, closes=_FAKE_CLOSES):
+        monkeypatch.setattr(
+            "kalshi.strategies.fair_value._get_binance_closes",
+            lambda ticker, window_minutes=60: closes,
+        )
+
+    def test_signal_deep_itm_underpriced_yes(self, monkeypatch):
+        self._patch_binance(monkeypatch)
+        # spot (~65000) far above strike (60000) -> model P(yes) near 1,
+        # but Kalshi quotes YES cheaply -> large edge on the yes side
+        q = _make_fv_quotes("T", yes_bid=0.50, yes_ask=0.52,
+                            no_bid=0.47, no_ask=0.49, floor_strike=60000.0)
+        result = self.strategy.signal("T", [], q)
+        assert result is not None
+        assert result["side"] == "yes"
+        assert result["type"] == "fair_value"
+
+    def test_no_signal_when_edge_below_threshold(self, monkeypatch):
+        self._patch_binance(monkeypatch)
+        # spot ~ strike, quotes near the model's own value -> edge below threshold
+        q = _make_fv_quotes("T", yes_bid=0.49, yes_ask=0.51,
+                            no_bid=0.49, no_ask=0.51, floor_strike=65000.0)
+        result = self.strategy.signal("T", [], q)
+        assert result is None
+
+    def test_no_signal_missing_strike(self, monkeypatch):
+        self._patch_binance(monkeypatch)
+        q = _make_fv_quotes("T", 0.50, 0.52, 0.47, 0.49)
+        del q["T"]["floor_strike"]
+        result = self.strategy.signal("T", [], q)
+        assert result is None
+
+    def test_no_signal_unknown_strike_type(self, monkeypatch):
+        self._patch_binance(monkeypatch)
+        q = _make_fv_quotes("T", 0.50, 0.52, 0.47, 0.49,
+                            floor_strike=60000.0, strike_type="weird")
+        result = self.strategy.signal("T", [], q)
+        assert result is None
+
+    def test_no_signal_when_spread_too_wide(self, monkeypatch):
+        self._patch_binance(monkeypatch)
+        q = _make_fv_quotes("T", yes_bid=0.50, yes_ask=0.65,
+                            no_bid=0.30, no_ask=0.45, floor_strike=60000.0)
+        result = self.strategy.signal("T", [], q)
+        assert result is None
+
+    def test_no_signal_when_binance_unavailable(self, monkeypatch):
+        self._patch_binance(monkeypatch, closes=None)
+        q = _make_fv_quotes("T", 0.50, 0.52, 0.47, 0.49, floor_strike=60000.0)
+        result = self.strategy.signal("T", [], q)
+        assert result is None
+
+    def test_config_params_has_strategy_key(self):
+        cfg = self.strategy.config_params()
+        assert cfg["strategy"] == "fair_value"
+        assert "min_edge_pct" in cfg
+
+
+# ---------------------------------------------------------------------------
+# MomentumStrategy
+# ---------------------------------------------------------------------------
+
+class TestMomentumStrategy:
+    def setup_method(self):
+        self.strategy = MomentumStrategy(
+            momentum_threshold_pct=0.02, history_minutes=3, min_history_points=4
+        )
+
+    def _make_history(self, prices):
+        return [(datetime.now(), p) for p in prices]
+
+    def test_signal_upward_move(self):
+        q = _make_quotes("T", yes_bid=0.53, yes_ask=0.55)
+        history = self._make_history([0.50, 0.505, 0.51, 0.515, 0.53])
+        result = self.strategy.signal("T", history, q)
+        assert result is not None
+        assert result["side"] == "yes"
+        assert result["type"] == "momentum"
+
+    def test_signal_downward_move(self):
+        q = _make_quotes("T", yes_bid=0.45, yes_ask=0.47)
+        history = self._make_history([0.50, 0.495, 0.49, 0.48, 0.46])
+        result = self.strategy.signal("T", history, q)
+        assert result is not None
+        assert result["side"] == "no"
+
+    def test_no_signal_flat_prices(self):
+        q = _make_quotes("T", yes_bid=0.50, yes_ask=0.52)
+        history = self._make_history([0.50, 0.501, 0.499, 0.50, 0.502])
+        result = self.strategy.signal("T", history, q)
+        assert result is None
+
+    def test_no_signal_too_few_points(self):
+        q = _make_quotes("T", yes_bid=0.53, yes_ask=0.55)
+        history = self._make_history([0.50, 0.53])   # < min_history_points=4
+        result = self.strategy.signal("T", history, q)
+        assert result is None
+
+    def test_no_signal_when_spread_too_wide(self):
+        q = _make_quotes("T", yes_bid=0.50, yes_ask=0.65)
+        history = self._make_history([0.50, 0.505, 0.51, 0.515, 0.53])
+        result = self.strategy.signal("T", history, q)
+        assert result is None
+
+    def test_no_signal_when_tte_out_of_range(self):
+        close = datetime.now(timezone.utc) + timedelta(minutes=20)
+        q = _make_quotes("T", 0.53, 0.55, close_time_utc=close)
+        history = self._make_history([0.50, 0.505, 0.51, 0.515, 0.53])
+        result = self.strategy.signal("T", history, q)
+        assert result is None
+
+    def test_config_params_has_strategy_key(self):
+        cfg = self.strategy.config_params()
+        assert cfg["strategy"] == "momentum"
+        assert "momentum_threshold_pct" in cfg

@@ -6,6 +6,8 @@ This file is a thin wrapper: parse args, construct objects, run.
 Strategies (--strategy flag):
   mean_reversion    — buy YES/NO after a reversal from an extreme
   favorite_longshot — buy NO on contracts priced >88c YES, hold to expiry
+  fair_value        — trade mispricing vs. a digital-option probability model
+  momentum          — buy in the direction of a recent price move, hold to expiry
 
 Usage:
     python runner.py [--strategy favorite_longshot] [--duration-minutes 60] ...
@@ -20,6 +22,8 @@ if ROOT not in sys.path:
 
 from kalshi.strategies.longshot import FavoriteLongshotStrategy
 from kalshi.strategies.mean_reversion import MeanReversionStrategy
+from kalshi.strategies.fair_value import FairValueStrategy
+from kalshi.strategies.momentum import MomentumStrategy
 from kalshi.live.engine import PaperTradingEngine, parse_trading_window
 
 
@@ -34,7 +38,7 @@ def main():
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     p.add_argument("--strategy", default=os.getenv("STRATEGY", "mean_reversion"),
-                   choices=["mean_reversion", "favorite_longshot"])
+                   choices=["mean_reversion", "favorite_longshot", "fair_value", "momentum"])
     p.add_argument("--duration-minutes", type=int,
                    default=int(os.getenv("DURATION_MINUTES", "60")))
     p.add_argument("--initial-cash", type=float,
@@ -80,6 +84,24 @@ def main():
     p.add_argument("--momentum-threshold", type=float,
                    default=float(os.getenv("MOMENTUM_THRESHOLD", "0.3")))
 
+    # fair_value params
+    p.add_argument("--fair-value-min-edge", type=float,
+                   default=float(os.getenv("FAIR_VALUE_MIN_EDGE", "0.03")))
+    p.add_argument("--fair-value-time-stop", type=int,
+                   default=int(os.getenv("FAIR_VALUE_TIME_STOP", "14")))
+    p.add_argument("--fair-value-vol-window", type=int,
+                   default=int(os.getenv("FAIR_VALUE_VOL_WINDOW", "60")))
+
+    # momentum (trend-continuation) params
+    p.add_argument("--trend-threshold", type=float,
+                   default=float(os.getenv("TREND_THRESHOLD", "0.02")))
+    p.add_argument("--trend-history-minutes", type=float,
+                   default=float(os.getenv("TREND_HISTORY_MINUTES", "3.0")))
+    p.add_argument("--trend-min-points", type=int,
+                   default=int(os.getenv("TREND_MIN_POINTS", "4")))
+    p.add_argument("--trend-time-stop", type=int,
+                   default=int(os.getenv("TREND_TIME_STOP", "14")))
+
     args = p.parse_args()
 
     trading_window = None
@@ -96,7 +118,7 @@ def main():
             history_minutes   = args.history_minutes,
             max_positions     = args.max_positions,
         )
-    else:
+    elif args.strategy == "favorite_longshot":
         strategy = FavoriteLongshotStrategy(
             longshot_threshold      = args.longshot_threshold,
             time_stop_minutes       = args.longshot_time_stop,
@@ -107,6 +129,27 @@ def main():
             momentum_filter         = not args.no_momentum_filter,
             momentum_window_minutes = args.momentum_window,
             momentum_threshold_pct  = args.momentum_threshold,
+        )
+    elif args.strategy == "fair_value":
+        strategy = FairValueStrategy(
+            min_edge_pct       = args.fair_value_min_edge,
+            time_stop_minutes  = args.fair_value_time_stop,
+            max_positions      = args.max_positions,
+            min_tte_minutes    = args.min_tte_minutes,
+            max_tte_minutes    = args.max_tte_minutes,
+            max_spread_cents   = args.max_spread_cents,
+            vol_window_minutes = args.fair_value_vol_window,
+        )
+    else:
+        strategy = MomentumStrategy(
+            momentum_threshold_pct = args.trend_threshold,
+            history_minutes        = args.trend_history_minutes,
+            min_history_points     = args.trend_min_points,
+            time_stop_minutes      = args.trend_time_stop,
+            max_positions          = args.max_positions,
+            min_tte_minutes        = args.min_tte_minutes,
+            max_tte_minutes        = args.max_tte_minutes,
+            max_spread_cents       = args.max_spread_cents,
         )
 
     engine = PaperTradingEngine(
