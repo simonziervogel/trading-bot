@@ -1,0 +1,38 @@
+# Python
+venv/
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+
+# Secrets & credentials — NEVER commit these
+.env
+*.key
+venv/my_key_prod.key
+venv/my_key.key
+
+# Local database
+trading.db
+
+# Backtest output (regenerable via backtest.py)
+results/
+
+# All logs and run output
+logs/
+*.log
+*.jsonl
+
+# Backtest output logs (large, generated)
+backtest_*.log
+aggressive_test.log
+
+# IDE
+.vscode/
+.idea/
+
+# Claude Code internal files
+.claude/
+
+# OS
+.DS_Store
+Thumbs.db
