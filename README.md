@@ -6,6 +6,10 @@ Trades are **simulated** — no real orders are placed. All fills use live produ
 
 ![Bucket analysis](docs/images/backtest_buckets.png)
 
+**[analysis.ipynb](analysis.ipynb)** — per-strategy summary, month-by-month
+comparison, and out-of-sample validation, all in one place with tables and
+charts. Renders fully on GitHub, no setup needed.
+
 ## Strategies
 
 Four independent hypotheses, each testing a different kind of market inefficiency.
@@ -69,6 +73,13 @@ kalshi/
   utils/                 Shared time/fee/market-data/pricing helpers
 ```
 
+Both `metrics.py` and `common_metrics.py` also compute a Sharpe ratio
+(`sharpe_ratio()`) — per-trade mean/stdev of net PnL after fees, plus an
+*observed-frequency* annualized version. That annualization is explicitly not
+a standard daily-return Sharpe: these are event-driven signals with irregular
+spacing, so blindly multiplying by sqrt(252) would overstate confidence the
+same way backtesting TP/SL off 1-min candles would (see MeanReversion above).
+
 `kalshi/backtest/metrics.py` stays NO-side-only (Favorite-Longshot always
 trades NO); `common_metrics.py` is a separate, additive module for strategies
 that can trade either side — a deliberate "don't abstract prematurely" call
@@ -82,9 +93,11 @@ Root-level scripts are thin CLI entry points over the package:
 | `backtest.py` | Favorite-Longshot backtest CLI |
 | `backtest_momentum.py` | Momentum backtest CLI |
 | `backtest_fair_value.py` | Fair-value backtest CLI |
+| `compare_periods.py` | Runs all 3 backtestable strategies across calendar months, writes `results/period_comparison.csv` |
 | `db_ingest.py` | Ingest run results into local SQLite database |
 | `market_analysis.py` | Standalone live market sampling tool (spreads, volatility) |
 | `run_daily.bat` | Windows scheduled task script (runs daily at 15:30) |
+| `analysis.ipynb` | Notebook tying the above together — see link above |
 
 ## Setup
 
@@ -109,8 +122,22 @@ python backtest.py --max-markets 500 --plot results/chart
 python backtest_momentum.py --max-markets 500 --plot results/momentum
 python backtest_fair_value.py --max-markets 500 --plot results/fair_value
 
+# Train/test split (out-of-sample check) on a calendar window
+python backtest_fair_value.py --from 2026-04-15 --to 2026-06-06 --test-after 2026-05-24
+
+# Compare all 3 backtestable strategies across calendar months
+python compare_periods.py
+
 # Analyse paper-trading results
 python db_ingest.py --all
+```
+
+`analysis.ipynb` (needs `jupyter`/`ipykernel`, not in `requirements.txt` since
+it's only needed to *re-run* the notebook, not to view it on GitHub):
+
+```bash
+pip install jupyter ipykernel
+jupyter notebook analysis.ipynb
 ```
 
 ## Testing
@@ -119,9 +146,9 @@ python db_ingest.py --all
 pytest -q
 ```
 
-88 tests covering fee calculation, time utilities, digital-option pricing,
-strategy signal logic (all four strategies), and each backtest engine's
-no-lookahead guarantee.
+95 tests covering fee calculation, time utilities, digital-option pricing,
+Sharpe-ratio calculation, strategy signal logic (all four strategies), and
+each backtest engine's no-lookahead guarantee.
 
 ## Configuration (`.env`)
 
@@ -142,27 +169,73 @@ Production backtest (N=2033, Feb–Mar 2026):
 Live validation ongoing (N=13 us_open_burst trades as of May 2026).
 
 ### Momentum
-Production backtest (N=800, both series, threshold=2% over a 5-min trailing window):
-- **Overall: 70.0% win rate, EV/contract −0.009, z=+0.36** — no significant edge
-- **side=no (betting a down-move continues): 75.8% WR, EV/contract +0.033, z=+2.14** — borderline significant
-- **side=yes (betting an up-move continues): 63.4% WR, EV/contract −0.056, z=−1.69** — mildly negative
+Initial production backtest (N=800, both series, threshold=2% over a 5-min
+trailing window) split roughly evenly by side: **overall 70.0% win rate,
+EV/contract −0.009, z=+0.36 — no significant edge**, but
+**side=no (betting a down-move continues): 75.8% WR, EV/contract +0.033,
+z=+2.14 — borderline significant**, while side=yes ran mildly negative
+(63.4% WR, EV/contract −0.056, z=−1.69).
 
-The entry threshold turned out to be non-binding — a >=2% move in the trailing
-window occurs in essentially every market sampled (800/800 signaled), so this
-reads more like "unconditional direction persistence" than a rare, selective
-signal. Worth tightening the threshold before trusting it further.
+**Out-of-sample check** (`--from 2026-05-10 --to 2026-06-06 --test-after
+2026-05-24`, N=3999, ~4-week train / ~2-week test split) confirms the
+side asymmetry and, if anything, strengthens the side=no signal on the held-out
+period:
 
-![Momentum equity curve](docs/images/momentum_equity.png)
+| Split | N (side=no) | WR | EV/contract | z |
+|---|---|---|---|---|
+| Train | 674  | 66.5% | −0.005 | +0.60 |
+| Test  | 1326 | 71.6% | +0.014 | +2.24 |
+
+side=yes reverses to a significantly *negative* z=−2.36 on the test split —
+so "buy NO after a down-move continues" looks like the real (if modest) part
+of this signal, "buy YES after an up-move continues" does not.
+Sharpe (per-trade, combined): +0.003 — essentially flat; the *annualized*
+figure this implies is enormous (~69,000 trades/year observed frequency) and
+not meaningful here, see the Sharpe caveat above.
+
+The entry threshold itself is still non-binding — a ≥2% move in the trailing
+window occurs in essentially every market sampled — so this reads more like
+"conditional direction persistence on the downside" than a rare, selective
+signal. Tightening the threshold is the natural next step.
+
+![Momentum equity curve (out-of-sample, combined)](docs/images/momentum_oos_equity.png)
 
 ### Fair Value
-Production backtest (N=800, both series, min_edge=3 percentage points, 60-min realized-vol window):
-- **Overall: 48.9% win rate, EV/contract +0.009, z=+1.47** — not significant
-- **side=no (model says Kalshi overprices YES): 70.0% WR, EV/contract +0.205, z=+4.88** — highly significant
-- **side=yes (model says Kalshi underprices YES): 45.1% WR, EV/contract −0.026, z=−0.46** — no edge
+Initial production backtest (N=800) found a striking but small (N=120)
+side=no result and was explicitly flagged as needing a held-out test before
+trusting it. That check has now been run.
 
-Like the threshold above, min_edge=3pp didn't filter much (800/800 signaled).
-The side=no result is the most statistically striking finding across all four
-strategies here — whether it holds up needs a held-out test split and more
-data before it's trustworthy, not just a bigger green number on a chart.
+**Out-of-sample check** (same window as Momentum above, N=3999) — the finding
+holds up and is essentially unchanged in effect size between train and test:
 
-![Fair value equity curve](docs/images/fair_value_equity.png)
+| Split | N (side=no) | WR | EV/contract | z |
+|---|---|---|---|---|
+| Train | 89  | 73.0% | +0.231 | +4.70 |
+| Test  | 195 | 71.3% | +0.221 | +6.66 |
+| **Combined** | **284** | **71.8%** | **+0.224** | **+8.15** |
+
+side=yes stays at no edge in both splits (combined z=+0.08). The effect is
+concentrated in a small fraction of markets — 284 of 3999 signaled on the NO
+side, the rest on YES, which has no edge — so this isn't the model firing
+constantly and getting lucky on average; it's a specific, repeatable
+disagreement between the model and Kalshi's quote. This is the standout
+result of the whole project: a real, out-of-sample-replicated statistical
+edge specifically when the digital-option model says Kalshi overprices
+YES — not proof of a robust tradeable strategy yet (still one ~6-week
+window, one regime), but a properly validated one rather than an exciting
+single backtest number.
+
+![Fair value equity curve (out-of-sample, combined)](docs/images/fair_value_oos_equity.png)
+
+### Period comparison
+`compare_periods.py` runs all three backtestable strategies across calendar
+months (Feb–May 2026); see `results/period_comparison.csv` and
+`analysis.ipynb` for the full table and chart. **Caveat:** each month is
+capped at 150 markets/series for runtime, and the engines sample the most
+*recent* qualifying markets in a date range — so each "month" here is really
+its last ~1.5 days, not a full-month average. Directionally still useful:
+Fair Value's overall (both-sides) EV per contract was positive and
+significant in Feb–Apr (z up to +4.72) and went negative in May (z=−0.92) —
+consistent with the side=no-only edge being real but diluted by the larger,
+no-edge side=yes population in any given snapshot, not evidence against the
+side=no finding itself.
