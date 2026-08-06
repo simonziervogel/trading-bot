@@ -10,6 +10,7 @@ entry_price (float, dollars), side_won (bool).
 """
 
 import math
+from datetime import datetime
 from typing import Union
 
 Obs = Union[object, dict]
@@ -95,6 +96,55 @@ def max_drawdown(obs: list) -> float:
     return max_dd
 
 
+def sharpe_ratio(obs: list) -> dict:
+    """Per-trade Sharpe ratio of net PnL after fees.
+
+    Each observation's net PnL: win pays (1 - entry_price - entry_fee), loss
+    costs -(entry_price + entry_fee) — settlement is fee-free.
+
+    Returns a dict:
+      per_trade       - mean/stdev of net PnL per trade (None if <2 obs or zero variance)
+      trades_per_year - observed trade frequency, from the entry_time_utc span
+      annualized      - per_trade * sqrt(trades_per_year) (None if either input is None)
+
+    This is an *observed-frequency* annualization, not a fixed daily-return
+    Sharpe — see kalshi.backtest.metrics.sharpe_ratio for the same caveat.
+    """
+    n = len(obs)
+    if n < 2:
+        return {"per_trade": None, "trades_per_year": None, "annualized": None}
+
+    pnls = []
+    for o in obs:
+        price = _val(o, "entry_price")
+        won   = _val(o, "side_won")
+        fee   = _taker_fee(price)
+        pnls.append((1.0 - price - fee) if won else -(price + fee))
+
+    mean     = sum(pnls) / n
+    variance = sum((p - mean) ** 2 for p in pnls) / (n - 1)
+    stdev    = math.sqrt(variance)
+    if stdev < 1e-9:
+        return {"per_trade": None, "trades_per_year": None, "annualized": None}
+
+    per_trade = mean / stdev
+
+    times = sorted(_val(o, "entry_time_utc") for o in obs)
+    try:
+        span_days = (
+            datetime.fromisoformat(times[-1]) - datetime.fromisoformat(times[0])
+        ).total_seconds() / 86400.0
+    except Exception:
+        span_days = 0.0
+
+    if span_days <= 0:
+        return {"per_trade": per_trade, "trades_per_year": None, "annualized": None}
+
+    trades_per_year = n / (span_days / 365.25)
+    annualized      = per_trade * math.sqrt(trades_per_year)
+    return {"per_trade": per_trade, "trades_per_year": trades_per_year, "annualized": annualized}
+
+
 def print_summary_table(obs: list, title: str = "") -> None:
     """Print overall + per-side stats to stdout."""
     if not obs:
@@ -128,3 +178,14 @@ def print_summary_table(obs: list, title: str = "") -> None:
     _row("ALL", obs)
     _row("side=yes", [o for o in obs if _val(o, "side") == "yes"])
     _row("side=no",  [o for o in obs if _val(o, "side") == "no"])
+
+    sharpe = sharpe_ratio(obs)
+    if sharpe["per_trade"] is not None:
+        if sharpe["annualized"] is not None:
+            print(
+                f"  Sharpe (per-trade): {sharpe['per_trade']:+.3f}   "
+                f"annualized (observed freq, ~{sharpe['trades_per_year']:.0f}/yr): "
+                f"{sharpe['annualized']:+.2f}"
+            )
+        else:
+            print(f"  Sharpe (per-trade): {sharpe['per_trade']:+.3f}   annualized: n/a")

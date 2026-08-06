@@ -5,6 +5,7 @@ They return plain Python scalars or dicts — no external dependencies.
 """
 
 import math
+from datetime import datetime
 from typing import Union
 
 
@@ -115,6 +116,57 @@ def max_drawdown(obs: list) -> float:
         if dd > max_dd:
             max_dd = dd
     return max_dd
+
+
+def sharpe_ratio(obs: list) -> dict:
+    """Per-trade Sharpe ratio of NO-side net PnL after fees.
+
+    Each observation's net PnL: win pays (1 - no_price - entry_fee), loss
+    costs -(no_price + entry_fee) — settlement is fee-free.
+
+    Returns a dict:
+      per_trade       - mean/stdev of net PnL per trade (None if <2 obs or zero variance)
+      trades_per_year - observed trade frequency, from the entry_time_utc span
+      annualized      - per_trade * sqrt(trades_per_year) (None if either input is None)
+
+    This is an *observed-frequency* annualization, not a fixed daily-return
+    Sharpe — these are event-driven signals with irregular spacing, so a
+    blanket sqrt(252) would overstate confidence the same way backtesting
+    TP/SL off 1-min candles would (see MeanReversion's live-only rationale).
+    """
+    n = len(obs)
+    if n < 2:
+        return {"per_trade": None, "trades_per_year": None, "annualized": None}
+
+    pnls = []
+    for o in obs:
+        no_price = _val(o, "no_price")
+        won      = _val(o, "no_won")
+        fee      = _taker_fee(no_price)
+        pnls.append((1.0 - no_price - fee) if won else -(no_price + fee))
+
+    mean     = sum(pnls) / n
+    variance = sum((p - mean) ** 2 for p in pnls) / (n - 1)
+    stdev    = math.sqrt(variance)
+    if stdev < 1e-9:
+        return {"per_trade": None, "trades_per_year": None, "annualized": None}
+
+    per_trade = mean / stdev
+
+    times = sorted(_val(o, "entry_time_utc") for o in obs)
+    try:
+        span_days = (
+            datetime.fromisoformat(times[-1]) - datetime.fromisoformat(times[0])
+        ).total_seconds() / 86400.0
+    except Exception:
+        span_days = 0.0
+
+    if span_days <= 0:
+        return {"per_trade": per_trade, "trades_per_year": None, "annualized": None}
+
+    trades_per_year = n / (span_days / 365.25)
+    annualized      = per_trade * math.sqrt(trades_per_year)
+    return {"per_trade": per_trade, "trades_per_year": trades_per_year, "annualized": annualized}
 
 
 # ---------------------------------------------------------------------------
@@ -242,6 +294,17 @@ def print_bucket_table(obs: list, title: str = "") -> None:
         f"{avg_no_all:>7.1%}  {wr_all - avg_no_all:>+6.1%}  "
         f"{ev_all:>+7.4f}  {z_all:>+6.2f}"
     )
+
+    sharpe = sharpe_ratio(obs)
+    if sharpe["per_trade"] is not None:
+        if sharpe["annualized"] is not None:
+            print(
+                f"  Sharpe (per-trade): {sharpe['per_trade']:+.3f}   "
+                f"annualized (observed freq, ~{sharpe['trades_per_year']:.0f}/yr): "
+                f"{sharpe['annualized']:+.2f}"
+            )
+        else:
+            print(f"  Sharpe (per-trade): {sharpe['per_trade']:+.3f}   annualized: n/a")
 
 
 def print_segment_table(obs: list) -> None:
