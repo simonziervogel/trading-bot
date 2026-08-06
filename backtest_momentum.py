@@ -28,6 +28,8 @@ def main():
     p.add_argument("--max-markets", type=int, default=500)
     p.add_argument("--from", dest="date_from", type=str, default=None, metavar="YYYY-MM-DD")
     p.add_argument("--to", dest="date_to", type=str, default=None, metavar="YYYY-MM-DD")
+    p.add_argument("--test-after", type=str, default=None, metavar="YYYY-MM-DD",
+                   help="Markets from this date onward go to the 'test' split")
     p.add_argument("--min-tte", type=float, default=5.0)
     p.add_argument("--max-tte", type=float, default=13.0)
     p.add_argument("--min-volume", type=float, default=1000.0)
@@ -46,10 +48,13 @@ def main():
         except ValueError:
             p.error(f"Invalid date for {flag}: '{s}' — expected YYYY-MM-DD")
 
+    test_after = _parse_date(args.test_after, "--test-after") if args.test_after else None
+
     config = MomentumBacktestConfig(
         series=args.series,
         date_from=_parse_date(args.date_from, "--from") if args.date_from else None,
         date_to=_parse_date(args.date_to, "--to") if args.date_to else None,
+        test_after=test_after,
         min_tte=args.min_tte, max_tte=args.max_tte,
         min_volume=args.min_volume, max_markets=args.max_markets,
         momentum_threshold_pct=args.threshold,
@@ -59,16 +64,30 @@ def main():
 
     print(f"backtest_momentum.py  |  series={config.series}  max={config.max_markets}  "
           f"threshold={config.momentum_threshold_pct}  TTE=[{config.min_tte},{config.max_tte}]")
+    if test_after:
+        print(f"                      |  train/test split at {args.test_after}")
 
     engine  = MomentumBacktestEngine(verbose=args.verbose)
     results = engine.run(config)
     results.export_csv(args.csv)
 
-    print_summary_table(results.observations, title="MOMENTUM — ALL MARKETS")
+    all_obs = results.observations
+    if test_after:
+        train, test = results.train, results.test
+        print_summary_table(train,   title=f"TRAIN  (before {args.test_after})")
+        print_summary_table(test,    title=f"TEST   (from   {args.test_after})")
+        print_summary_table(all_obs, title="COMBINED")
+    else:
+        print_summary_table(all_obs, title="MOMENTUM — ALL MARKETS")
 
     if args.plot:
         try:
-            save_equity_curve(results.observations, f"{args.plot}_equity.png",
+            if test_after:
+                save_equity_curve(results.train, f"{args.plot}_train_equity.png",
+                                 title="Momentum — Equity Curve (TRAIN)")
+                save_equity_curve(results.test,  f"{args.plot}_test_equity.png",
+                                 title="Momentum — Equity Curve (TEST)")
+            save_equity_curve(all_obs, f"{args.plot}_equity.png",
                              title="Momentum — Equity Curve")
         except ImportError:
             print("\n  [WARN] matplotlib not installed — skipping chart")
