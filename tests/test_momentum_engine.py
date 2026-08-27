@@ -70,6 +70,32 @@ class TestScanMarket:
         assert obs.tte_minutes == pytest.approx(10.0, abs=0.1)
         assert obs.side_won is True   # result == "yes" == side
 
+    def test_recorded_price_is_executable_ask_bid_not_mid(self):
+        """entry_price must come from yes_ask/yes_bid, not the mid used for the signal."""
+        close = datetime(2026, 6, 1, 14, 0, 0)
+        cfg   = MomentumBacktestConfig(
+            momentum_threshold_pct=0.02, history_minutes=10.0, min_history_points=4,
+            min_tte=5.0, max_tte=13.0,
+        )
+        pre = [_candle(0.40, close - timedelta(minutes=m)) for m in (20, 19, 18, 17, 16, 15)]
+        # Wide spread on the signal candle: mid=0.46 (qualifies, +15%), but
+        # yes_bid=0.41 / yes_ask=0.51 -> real YES fill price is 0.51, not 0.46
+        wide = {
+            "yes_bid": {"close": 0.41}, "yes_ask": {"close": 0.51},
+            "price": {"close": 0.46}, "end_period_ts": _utc_epoch(close - timedelta(minutes=10)),
+        }
+        engine = _make_engine(pre + [wide])
+        market = _market("T", close, result="yes")
+
+        obs = engine._scan_market(market, "KXBTC15M", cfg)
+        assert obs is not None
+        assert obs.side == "yes"
+        assert obs.yes_bid == pytest.approx(0.41)
+        assert obs.yes_ask == pytest.approx(0.51)
+        assert obs.entry_price == pytest.approx(0.51)   # yes_ask
+        assert obs.entry_price != pytest.approx(0.46)     # NOT mid
+        assert obs.spread_cents == pytest.approx(10.0)
+
     def test_downward_trend_signals_no(self):
         close = datetime(2026, 6, 1, 14, 0, 0)
         cfg   = MomentumBacktestConfig(

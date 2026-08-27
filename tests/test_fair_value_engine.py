@@ -119,6 +119,39 @@ class TestScanMarket:
         obs = engine._scan_market(market, "KXBTC15M", series, cfg)
         assert obs is None
 
+    def test_recorded_price_is_executable_ask_bid_not_mid(self):
+        """entry_price/edge must come from yes_ask/yes_bid, never the midpoint."""
+        close  = datetime(2026, 6, 1, 14, 0, 0)
+        cfg    = FairValueBacktestConfig(min_tte=2.0, max_tte=14.0, min_edge_pct=0.03)
+        market = _market("T", close, floor_strike=60000.0, result="yes")
+        entry_time = close - timedelta(minutes=12)
+        series = _flat_price_series(close, spot=65000.0)
+
+        # Deep ITM (spot 65000 >> strike 60000) -> model P(yes) near 1.
+        # Wide, asymmetric spread on the signal candle: mid=0.50 but
+        # yes_bid=0.40 / yes_ask=0.60 -> real YES fill price is 0.60, not 0.50.
+        wide = {
+            "yes_bid": {"close": 0.40}, "yes_ask": {"close": 0.60},
+            "price": {"close": 0.50}, "end_period_ts": _utc_epoch(entry_time),
+        }
+        candles = [wide,
+                  _candle(0.50, close - timedelta(minutes=10)),
+                  _candle(0.50, close - timedelta(minutes=8))]
+        engine = _make_engine()
+        engine.client.get_historical_market_candlesticks.return_value = {"candlesticks": candles}
+
+        obs = engine._scan_market(market, "KXBTC15M", series, cfg)
+        assert obs is not None
+        assert obs.side == "yes"
+        assert obs.yes_bid == pytest.approx(0.40)
+        assert obs.yes_ask == pytest.approx(0.60)
+        assert obs.entry_price == pytest.approx(0.60)   # yes_ask
+        assert obs.entry_price != pytest.approx(0.50)     # NOT mid
+        assert obs.spread_cents == pytest.approx(20.0)
+        # Edge must be computed against the ask too, fee-adjusted downward
+        # from the raw model-vs-ask gap.
+        assert obs.edge < (obs.model_prob - 0.50)   # strictly less than the mid-based figure
+
     def test_no_signal_when_spot_unavailable(self):
         close  = datetime(2026, 6, 1, 14, 0, 0)
         cfg    = FairValueBacktestConfig(min_tte=2.0, max_tte=14.0)

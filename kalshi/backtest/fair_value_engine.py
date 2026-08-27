@@ -3,8 +3,10 @@
 For each historical market, replays Kalshi's own candlesticks against an
 independently reconstructed Binance BTC/ETH price series to find the first
 candle (within the TTE window) where the model probability disagrees with
-Kalshi's quoted price by more than min_edge_pct. No lookahead on either data
-source: only candles/klines strictly at-or-before the scan time are used.
+Kalshi's quoted, *executable* price (yes_ask / 1-yes_bid, fee-adjusted — never
+the midpoint, which isn't a real fill) by more than min_edge_pct. No
+lookahead on either data source: only candles/klines strictly at-or-before
+the scan time are used.
 """
 
 import csv
@@ -16,8 +18,9 @@ from typing import Optional
 
 from kalshi.client import KalshiClient
 from kalshi.utils.time import to_naive_utc, utc_timestamp, parse_optional_dt
-from kalshi.utils.market import parse_mid, time_segment
+from kalshi.utils.market import parse_quote, time_segment
 from kalshi.utils.pricing import digital_call_probability, realized_vol_annualized
+from kalshi.utils.fees import taker_fee
 from kalshi.data.binance_history import fetch_klines_range, PriceSeries
 
 _BINANCE_SYMBOL = {"KXBTC15M": "BTCUSDT", "KXETH15M": "ETHUSDT"}
@@ -46,7 +49,10 @@ class FairValueObservation:
     market_close_date: str
     entry_time_utc: str
     side: str
-    entry_price: float
+    entry_price: float          # executable price: yes_ask (yes) or 1-yes_bid (no)
+    yes_bid: float
+    yes_ask: float
+    spread_cents: float
     side_won: bool
     tte_minutes: float
     time_segment: str
@@ -63,6 +69,8 @@ class FairValueObservation:
             "market_close_date": self.market_close_date,
             "entry_time_utc": self.entry_time_utc,
             "side": self.side, "entry_price": self.entry_price,
+            "yes_bid": self.yes_bid, "yes_ask": self.yes_ask,
+            "spread_cents": self.spread_cents,
             "side_won": int(self.side_won), "tte_minutes": self.tte_minutes,
             "time_segment": self.time_segment,
             "model_prob": self.model_prob, "edge": self.edge,
@@ -241,8 +249,8 @@ class FairValueBacktestEngine:
         candles_sorted = sorted(candles, key=_ts_key)
 
         for candle in candles_sorted:
-            mid, _source = parse_mid(candle)
-            if mid is None:
+            bid, ask, mid, _source = parse_quote(candle)
+            if bid is None or ask is None:
                 continue
 
             ts_raw = candle.get("end_period_ts")
@@ -271,10 +279,15 @@ class FairValueBacktestEngine:
             if p_yes is None:
                 continue
 
-            yes_price = mid
-            no_price  = 1.0 - mid
-            edge_yes  = p_yes - yes_price
-            edge_no   = (1.0 - p_yes) - no_price
+            # Compare the model directly against what you'd actually pay —
+            # yes_ask (buy YES) / 1-yes_bid (buy NO) — never the midpoint,
+            # and net out the entry fee. Mirrors the live FairValueStrategy
+            # exactly (kalshi/strategies/fair_value.py), which already did
+            # this correctly; the backtest previously did not.
+            yes_price = ask
+            no_price  = 1.0 - bid
+            edge_yes  = p_yes - yes_price - taker_fee(yes_price, 1)
+            edge_no   = (1.0 - p_yes) - no_price - taker_fee(no_price, 1)
 
             if edge_yes < config.min_edge_pct and edge_no < config.min_edge_pct:
                 continue
@@ -290,7 +303,10 @@ class FairValueBacktestEngine:
                 ticker=ticker, series=series,
                 market_close_date=market_end.strftime("%Y-%m-%d"),
                 entry_time_utc=candle_time.strftime("%Y-%m-%dT%H:%M:%S"),
-                side=side, entry_price=round(entry_price, 4), side_won=side_won,
+                side=side, entry_price=round(entry_price, 4),
+                yes_bid=round(bid, 4), yes_ask=round(ask, 4),
+                spread_cents=round((ask - bid) * 100, 2),
+                side_won=side_won,
                 tte_minutes=round(tte_minutes, 2),
                 time_segment=time_segment(candle_time),
                 model_prob=round(p_yes, 4), edge=round(edge, 4),

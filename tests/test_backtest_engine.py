@@ -80,6 +80,7 @@ class TestObservation:
             market_close_date="2026-06-01",
             entry_time_utc="2026-06-01T10:00:00",
             yes_mid=0.88, no_price=0.12,
+            yes_bid=0.87, yes_ask=0.89, spread_cents=2.0,
             tte_minutes=7.5, no_won=False,
             yes_bucket="0.85-0.90", time_segment="us_open_burst",
             pre_entry_vol=0.02, price_source="bid_ask", split="train",
@@ -93,17 +94,35 @@ class TestObservation:
         obs = Observation(
             ticker="T", series="S",
             market_close_date="2026-06-01", entry_time_utc="2026-06-01T10:00:00",
-            yes_mid=0.9, no_price=0.1, tte_minutes=7.0, no_won=True,
+            yes_mid=0.9, no_price=0.1,
+            yes_bid=0.89, yes_ask=0.91, spread_cents=2.0,
+            tte_minutes=7.0, no_won=True,
             yes_bucket="0.85-0.90", time_segment="off_hours",
             pre_entry_vol=0.0, price_source="bid_ask", split="test",
         )
         keys = set(obs.to_dict().keys())
         expected = {
             "ticker", "series", "market_close_date", "entry_time_utc",
-            "yes_mid", "no_price", "tte_minutes", "no_won", "yes_bucket",
+            "yes_mid", "no_price", "yes_bid", "yes_ask", "spread_cents",
+            "tte_minutes", "no_won", "yes_bucket",
             "time_segment", "pre_entry_vol", "price_source", "split",
         }
         assert keys == expected
+
+    def test_no_price_is_executable_not_midpoint(self):
+        # no_price must be 1 - yes_bid, NOT 1 - yes_mid — a NO contract is
+        # bought against the YES bid, never at the midpoint.
+        obs = Observation(
+            ticker="T", series="S",
+            market_close_date="2026-06-01", entry_time_utc="2026-06-01T10:00:00",
+            yes_mid=0.80, no_price=0.25,   # mid=0.80 but bid=0.75 -> no_price=1-0.75=0.25
+            yes_bid=0.75, yes_ask=0.85, spread_cents=10.0,
+            tte_minutes=7.0, no_won=True,
+            yes_bucket="0.75-0.80", time_segment="off_hours",
+            pre_entry_vol=0.0, price_source="bid_ask", split="train",
+        )
+        assert obs.no_price == pytest.approx(1.0 - obs.yes_bid)
+        assert obs.no_price != pytest.approx(1.0 - obs.yes_mid)
 
 
 # ---------------------------------------------------------------------------
@@ -149,6 +168,28 @@ class TestScanMarket:
         )
         assert obs is not None
         assert obs.tte_minutes == pytest.approx(9.0, abs=0.1)
+
+    def test_recorded_price_is_executable_ask_bid_not_mid(self):
+        """no_price must come from yes_bid, not the mid used for the threshold check."""
+        close = datetime(2026, 6, 1, 14, 0, 0)
+        pre1 = _candle(0.40, 0.42, close - timedelta(minutes=12))
+        pre2 = _candle(0.41, 0.43, close - timedelta(minutes=10))
+        # yes_bid=0.85, yes_ask=0.95 -> mid=0.90 (qualifies >= 0.85 threshold)
+        # but the real NO fill price is 1 - yes_bid = 0.15, not 1 - mid = 0.10
+        sig = _candle(0.85, 0.95, close - timedelta(minutes=9))
+
+        engine = self._make_engine([pre1, pre2, sig])
+        cfg    = BacktestConfig(scan_threshold=0.85, min_tte=5.0, max_tte=13.0)
+        obs = engine._scan_market(
+            "T", "KXBTC15M",
+            close - timedelta(minutes=15), close, no_won=True, split="train", config=cfg,
+        )
+        assert obs is not None
+        assert obs.yes_bid == pytest.approx(0.85)
+        assert obs.yes_ask == pytest.approx(0.95)
+        assert obs.no_price == pytest.approx(0.15)     # 1 - yes_bid
+        assert obs.no_price != pytest.approx(0.10)      # NOT 1 - mid
+        assert obs.spread_cents == pytest.approx(10.0)
 
     def test_no_lookahead_pre_entry_vol(self):
         """pre_entry_vol must only use candles that arrived BEFORE the signal candle."""

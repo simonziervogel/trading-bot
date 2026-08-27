@@ -1,24 +1,44 @@
 """Market data utilities — candle parsing and market metadata helpers."""
 
 
-def parse_mid(candle: dict) -> tuple[float | None, str]:
-    """Extract YES mid-price from a Kalshi candlestick dict.
+def parse_quote(candle: dict) -> tuple:
+    """Extract yes_bid, yes_ask, mid, and source label from a candlestick.
 
     Priority:
-      1. Bid/ask mid  (yes_bid.close + yes_ask.close) / 2  — reflects live quotes
-      2. Last trade   price.close                           — fallback, may be stale
+      1. Bid/ask  yes_bid.close, yes_ask.close  — real executable quotes
+      2. Last trade  price.close  — fallback when bid/ask are missing; treated
+         as both bid and ask (mid == last trade), source flagged so callers
+         can tell this isn't a real two-sided quote
 
-    Returns (mid_price, source_label) or (None, 'unavailable').
+    Returns (yes_bid, yes_ask, mid, source), or (None, None, None, 'unavailable').
     """
     yb = candle.get("yes_bid") or {}
     ya = candle.get("yes_ask") or {}
     pb = candle.get("price") or {}
 
     if yb.get("close") is not None and ya.get("close") is not None:
-        return (float(yb["close"]) + float(ya["close"])) / 2.0, "bid_ask"
+        bid, ask = float(yb["close"]), float(ya["close"])
+        return bid, ask, (bid + ask) / 2.0, "bid_ask"
     if pb.get("close") is not None:
-        return float(pb["close"]), "last_trade"
-    return None, "unavailable"
+        last = float(pb["close"])
+        return last, last, last, "last_trade"
+    return None, None, None, "unavailable"
+
+
+def parse_mid(candle: dict) -> tuple[float | None, str]:
+    """Extract YES mid-price from a Kalshi candlestick dict.
+
+    Thin wrapper over parse_quote() for callers that only need the midpoint
+    (e.g. signal/threshold checks, which characterize market consensus and
+    don't need to be executable). For anything that records an economic
+    outcome (entry price feeding win-rate/EV), use parse_quote() directly and
+    price at yes_ask (YES) or 1 - yes_bid (NO) — the midpoint is not a real
+    fill price.
+
+    Returns (mid_price, source_label) or (None, 'unavailable').
+    """
+    _bid, _ask, mid, source = parse_quote(candle)
+    return mid, source
 
 
 def get_series(ticker: str) -> str:

@@ -4,6 +4,10 @@ Design principles (preserved from backtest_v2.py):
   - No lookahead: pre_entry_vol only uses candles that arrived BEFORE the signal.
   - One observation per market (first qualifying candle).
   - Actual observed entry price for EV calculation, not bucket midpoint.
+  - Executable entry price, not midpoint: no_price = 1 - yes_bid, since a NO
+    contract is bought against the YES bid, not at the average of bid/ask.
+    The signal threshold itself still uses the midpoint (it characterizes
+    market consensus, not what you'd pay).
   - Train/test split by market close date (time-stable).
   - Full CSV export compatible with the original backtest_v2.py format.
 """
@@ -17,7 +21,7 @@ from typing import Optional
 
 from kalshi.client import KalshiClient
 from kalshi.utils.time import to_naive_utc, utc_timestamp, parse_optional_dt
-from kalshi.utils.market import parse_mid, bucket_label, time_segment
+from kalshi.utils.market import parse_quote, bucket_label, time_segment
 
 
 # ---------------------------------------------------------------------------
@@ -51,7 +55,10 @@ class Observation:
     market_close_date: str      # "YYYY-MM-DD"
     entry_time_utc: str         # "YYYY-MM-DDTHH:MM:SS"
     yes_mid: float
-    no_price: float
+    no_price: float              # executable NO entry price: 1 - yes_bid (not mid)
+    yes_bid: float
+    yes_ask: float
+    spread_cents: float
     tte_minutes: float
     no_won: bool
     yes_bucket: str
@@ -68,6 +75,9 @@ class Observation:
             "entry_time_utc":    self.entry_time_utc,
             "yes_mid":           self.yes_mid,
             "no_price":          self.no_price,
+            "yes_bid":           self.yes_bid,
+            "yes_ask":           self.yes_ask,
+            "spread_cents":      self.spread_cents,
             "tte_minutes":       self.tte_minutes,
             "no_won":            int(self.no_won),
             "yes_bucket":        self.yes_bucket,
@@ -268,7 +278,7 @@ class BacktestEngine:
         pre_mids = []
 
         for candle in candles_sorted:
-            mid, source = parse_mid(candle)
+            bid, ask, mid, source = parse_quote(candle)
 
             ts_raw = candle.get("end_period_ts")
             if ts_raw is None:
@@ -293,13 +303,18 @@ class BacktestEngine:
                 pre_vol = (
                     (max(pre_mids) - min(pre_mids)) if len(pre_mids) >= 2 else 0.0
                 )
+                # Longshot always buys NO — the executable price is 1 - yes_bid,
+                # not the midpoint (which is never actually fillable).
                 return Observation(
                     ticker            = ticker,
                     series            = series,
                     market_close_date = market_end.strftime("%Y-%m-%d"),
                     entry_time_utc    = candle_time.strftime("%Y-%m-%dT%H:%M:%S"),
                     yes_mid           = round(mid, 4),
-                    no_price          = round(1.0 - mid, 4),
+                    no_price          = round(1.0 - bid, 4),
+                    yes_bid           = round(bid, 4),
+                    yes_ask           = round(ask, 4),
+                    spread_cents      = round((ask - bid) * 100, 2),
                     tte_minutes       = round(tte, 2),
                     no_won            = no_won,
                     yes_bucket        = bucket_label(mid),
