@@ -4,7 +4,7 @@ Paper trading bot for [Kalshi](https://kalshi.com) binary markets, focused on 15
 
 Trades are **simulated** — no real orders are placed. All fills use live production market data.
 
-![Bucket analysis](docs/images/backtest_buckets.png)
+![Bucket analysis](docs/images/backtest_v2_buckets.png)
 
 **[analysis.ipynb](analysis.ipynb)** — per-strategy summary, month-by-month
 comparison, and out-of-sample validation, all in one place with tables and
@@ -28,11 +28,15 @@ price implies. Buy NO, hold to expiry. Entry filters: YES mid ≥ 0.85,
 time-to-expiry 5–13 min, spread ≤ 8 cents, no strong BTC/ETH momentum (via
 Binance API). **Backtested** — see Key Findings below.
 
-### MomentumStrategy — trend continuation
+### MomentumStrategy — trend continuation (documented negative result)
 Deliberate mirror image of Mean-Reversion: bets a recent price move
 *continues* into expiry rather than reverting. If the YES mid has moved by
 more than a threshold over a trailing window, buy in the direction of the
-move and hold to expiry. **Backtested** — see Key Findings below.
+move and hold to expiry. **Backtested and out-of-sample tested — the
+apparent edge turned out to be a fill-price modeling artifact and
+disappears under a corrected, executable-price fill model.** See Key
+Findings below; kept as another example (alongside MeanReversion) of a
+hypothesis that didn't survive scrutiny.
 
 ### FairValueStrategy — digital-option mispricing
 Kalshi's KXBTC15M/KXETH15M contracts resolve YES if the reference price at
@@ -41,7 +45,9 @@ cash-or-nothing digital options on "does the price finish above its own
 opening level." `kalshi/utils/pricing.py` prices that in closed form (a
 zero-drift lognormal model: spot + realized volatility from Binance, strike
 + time-to-expiry from Kalshi) and trades whichever side disagrees with
-Kalshi's own quote by more than the round-trip cost. **Backtested** — see Key
+Kalshi's own quote by more than the round-trip cost. **Backtested,
+out-of-sample tested, and re-confirmed on a full uncapped month of
+data — the strongest, most validated result in this project.** See Key
 Findings below.
 
 ### MeanReversionStrategy — reversal (documented negative result)
@@ -79,6 +85,19 @@ Both `metrics.py` and `common_metrics.py` also compute a Sharpe ratio
 a standard daily-return Sharpe: these are event-driven signals with irregular
 spacing, so blindly multiplying by sqrt(252) would overstate confidence the
 same way backtesting TP/SL off 1-min candles would (see MeanReversion above).
+
+**Fill model:** all three backtest engines price the recorded economic
+outcome (what feeds win-rate/EV/Sharpe) at the *executable* quote —
+`yes_ask` for a YES entry, `1 - yes_bid` for a NO entry — never the midpoint,
+which was Kalshi's own quoted bid/ask average and was never actually
+fillable. `kalshi/utils/market.py`'s `parse_quote()` returns bid, ask, and
+mid together; entry-filter/threshold decisions (e.g. Longshot's `mid >=
+0.85`) still use mid, since those characterize market consensus rather than
+what you'd pay, but every dollar figure that feeds a statistic uses the real
+price. `kalshi/utils/fees.py` also rounds the taker fee up to the cent on
+the whole order (`ceil(0.07 * price * (1-price) * qty * 100) / 100`),
+matching Kalshi's actual rounding rather than leaving it unrounded. See
+**Key Findings → Fill Model Fix** below for why this mattered and how much.
 
 `kalshi/backtest/metrics.py` stays NO-side-only (Favorite-Longshot always
 trades NO); `common_metrics.py` is a separate, additive module for strategies
@@ -146,9 +165,10 @@ jupyter notebook analysis.ipynb
 pytest -q
 ```
 
-95 tests covering fee calculation, time utilities, digital-option pricing,
-Sharpe-ratio calculation, strategy signal logic (all four strategies), and
-each backtest engine's no-lookahead guarantee.
+101 tests covering fee calculation (including cent rounding), time
+utilities, digital-option pricing, Sharpe-ratio calculation, strategy signal
+logic (all four strategies), and each backtest engine's no-lookahead
+guarantee and executable-price fill model.
 
 ## Configuration (`.env`)
 
@@ -160,82 +180,88 @@ KALSHI_KEY_FILE=path/to/your.key
 
 ## Key Findings
 
+### Fill Model Fix (read this first)
+
+All three backtest engines originally priced trades at the **midpoint** of
+Kalshi's quoted bid/ask — never actually fillable; buying YES costs the ask,
+buying NO costs `1 - yes_bid`. That inflates apparent edge by roughly half
+the spread on every single trade. Caught by cross-checking this project's
+own results against Kalshi's real order-book mechanics rather than trusting
+the code's own assumptions (spreads on these markets are actually fairly
+tight — median 1¢, 90th percentile 3–4¢ — so the damage was real but not
+catastrophic). Fixed across all three engines, plus the fee calculation now
+rounds up to the cent the way Kalshi actually charges it (previously
+unrounded). Full re-validation, before vs. after:
+
+| Strategy | Metric | Before (mid-price) | After (executable price) |
+|---|---|---|---|
+| Momentum side=no | N=800 base run | WR 75.8%, z=+2.14 | WR 65.7%, z=−0.31 |
+| Momentum side=no | Out-of-sample (N=2000) | z=+2.16 | z=+1.43, EV/c ≈ 0 |
+| Fair Value side=no | N=800 base run | N=120, WR 70.0%, z=+4.88 | N=31, WR 74.2%, z=+2.26 |
+| Fair Value side=no | Out-of-sample (N≈4000) | N=284, EV/c +0.224, z=+8.15 | N=233, EV/c +0.221, z=+7.30 |
+
+**Momentum's edge was a mid-price artifact** — it collapses to essentially
+zero once real fill prices are used, in both the base run and out-of-sample.
+**Fair Value's edge survives** — effect size (EV/contract) is nearly
+unchanged, it's just measured on a smaller, more honestly-filtered sample
+(the fee-adjusted edge threshold now correctly excludes trades that only
+looked profitable because of the mid-price shortcut). This is exactly the
+outcome this check was for: one finding got debunked, the other got
+independently strengthened by surviving a test that could have killed it.
+
+### Fair Value — the strongest result
+
+Full calendar month, uncapped (`--from 2026-05-01 --to 2026-05-31
+--max-markets 5000`; 2,921–2,923 markets per series, no cap hit, confirmed
+covering the entire month, not a truncated tail):
+
+- **side=no: N=1,029, win rate 65.1%, EV/contract +0.136, z=+9.85**
+- side=yes: N=4,815, EV/contract +0.011, z=+3.89 — a much smaller, less
+  reliable edge, consistent with side=no being where the real signal lives
+- Overall (both sides): z=+7.67
+
+This is now backed by three independent samples at increasing scale, all
+pointing the same direction: an initial 4-day sample (N=120 → N=31 corrected),
+a 6-week out-of-sample train/test split (N=284 → N=233 corrected, train
+z=+3.91 / test z=+6.17 independently), and this full-month run (N=1,029,
+z=+9.85). Effect size (EV/contract) is stable in the +0.14 to +0.22 range
+across all of them — the exact number moves with sample composition, but the
+direction and rough magnitude don't. Still one calendar month, one regime —
+not a claim this persists forever, but no longer a single exciting backtest
+number either.
+
+![Fair value equity curve (full May 2026, corrected fill model)](docs/images/fair_value_may_full_equity.png)
+
+### Momentum — debunked, kept as a documented negative result
+
+Same treatment as MeanReversion: a hypothesis that looked promising,
+survived one pass, and failed the follow-up check. Corrected out-of-sample
+(N=3999): overall z=−0.66, side=no z=+1.43 (not significant), EV/contract
+essentially zero (−0.0002). The entry threshold was also never
+selective — a ≥2% move in the trailing window fires on nearly every market
+sampled — so even the pre-fix "signal" was closer to unconditional market
+behavior than a rare, tradeable pattern.
+
+![Momentum equity curve (out-of-sample, corrected fill model)](docs/images/momentum_oos_v2_equity.png)
+
 ### Favorite-Longshot
-Production backtest (N=2033, Feb–Mar 2026):
-- **Overall NO win rate: 10.3%** — no general favorite-longshot bias on Kalshi
-- **us_open_burst (13:30–15:30 UTC): 15.7% WR, z=+2.51** — only window with positive edge
-- All other time windows: neutral or negative EV
+Original production backtest (N=2033, Feb–Mar 2026, predates this session's
+fill-model fix): overall NO win rate 10.3% (no general bias), us_open_burst
+window (13:30–15:30 UTC) 15.7% WR, z=+2.51 — the only window with positive
+edge. A fresh sample with the corrected engine (N=421, late June 2026, not
+the same window so not a direct before/after) shows the same shape — no
+across-the-board edge, bucket-level EV mostly negative or flat — consistent
+with, though not a literal re-run of, the original finding. Re-validating
+the exact Feb–Mar window with the corrected engine is a natural next step,
+lower priority than Fair Value since Longshot's effect was already
+concentrated in one narrow window rather than a broad claim.
 
-Live validation ongoing (N=13 us_open_burst trades as of May 2026).
-
-### Momentum
-Initial production backtest (N=800, both series, threshold=2% over a 5-min
-trailing window) split roughly evenly by side: **overall 70.0% win rate,
-EV/contract −0.009, z=+0.36 — no significant edge**, but
-**side=no (betting a down-move continues): 75.8% WR, EV/contract +0.033,
-z=+2.14 — borderline significant**, while side=yes ran mildly negative
-(63.4% WR, EV/contract −0.056, z=−1.69).
-
-**Out-of-sample check** (`--from 2026-05-10 --to 2026-06-06 --test-after
-2026-05-24`, N=3999, ~4-week train / ~2-week test split) confirms the
-side asymmetry and, if anything, strengthens the side=no signal on the held-out
-period:
-
-| Split | N (side=no) | WR | EV/contract | z |
-|---|---|---|---|---|
-| Train | 674  | 66.5% | −0.005 | +0.60 |
-| Test  | 1326 | 71.6% | +0.014 | +2.24 |
-
-side=yes reverses to a significantly *negative* z=−2.36 on the test split —
-so "buy NO after a down-move continues" looks like the real (if modest) part
-of this signal, "buy YES after an up-move continues" does not.
-Sharpe (per-trade, combined): +0.003 — essentially flat; the *annualized*
-figure this implies is enormous (~69,000 trades/year observed frequency) and
-not meaningful here, see the Sharpe caveat above.
-
-The entry threshold itself is still non-binding — a ≥2% move in the trailing
-window occurs in essentially every market sampled — so this reads more like
-"conditional direction persistence on the downside" than a rare, selective
-signal. Tightening the threshold is the natural next step.
-
-![Momentum equity curve (out-of-sample, combined)](docs/images/momentum_oos_equity.png)
-
-### Fair Value
-Initial production backtest (N=800) found a striking but small (N=120)
-side=no result and was explicitly flagged as needing a held-out test before
-trusting it. That check has now been run.
-
-**Out-of-sample check** (same window as Momentum above, N=3999) — the finding
-holds up and is essentially unchanged in effect size between train and test:
-
-| Split | N (side=no) | WR | EV/contract | z |
-|---|---|---|---|---|
-| Train | 89  | 73.0% | +0.231 | +4.70 |
-| Test  | 195 | 71.3% | +0.221 | +6.66 |
-| **Combined** | **284** | **71.8%** | **+0.224** | **+8.15** |
-
-side=yes stays at no edge in both splits (combined z=+0.08). The effect is
-concentrated in a small fraction of markets — 284 of 3999 signaled on the NO
-side, the rest on YES, which has no edge — so this isn't the model firing
-constantly and getting lucky on average; it's a specific, repeatable
-disagreement between the model and Kalshi's quote. This is the standout
-result of the whole project: a real, out-of-sample-replicated statistical
-edge specifically when the digital-option model says Kalshi overprices
-YES — not proof of a robust tradeable strategy yet (still one ~6-week
-window, one regime), but a properly validated one rather than an exciting
-single backtest number.
-
-![Fair value equity curve (out-of-sample, combined)](docs/images/fair_value_oos_equity.png)
-
-### Period comparison
-`compare_periods.py` runs all three backtestable strategies across calendar
-months (Feb–May 2026); see `results/period_comparison.csv` and
-`analysis.ipynb` for the full table and chart. **Caveat:** each month is
-capped at 150 markets/series for runtime, and the engines sample the most
-*recent* qualifying markets in a date range — so each "month" here is really
-its last ~1.5 days, not a full-month average. Directionally still useful:
-Fair Value's overall (both-sides) EV per contract was positive and
-significant in Feb–Apr (z up to +4.72) and went negative in May (z=−0.92) —
-consistent with the side=no-only edge being real but diluted by the larger,
-no-edge side=yes population in any given snapshot, not evidence against the
-side=no finding itself.
+### Period comparison (stale — predates the fill-model fix)
+`compare_periods.py` / `results/period_comparison.csv` were generated before
+the mid-price fix above and should be treated as superseded — regenerating
+them is a follow-up, not done in this round. Separately, that script also
+has a real sampling bug: each "month" is capped at 150 markets/series and
+the engines take the most *recent* qualifying markets in a date range, so
+each "month" is actually only its last ~1.5 days, not a representative
+average. Both issues affect the same file — don't cite numbers from it
+without fixing both first.
