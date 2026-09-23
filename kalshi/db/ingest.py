@@ -42,6 +42,21 @@ STRATEGY_REGISTRY: dict[str, dict] = {
         "max_positions":     8,
         "position_size_pct": 0.01,
     },
+    # Live validation config — must match exactly what run_fair_value_live.bat
+    # passes, since config_matches() compares every key listed here against
+    # the run's config. TTE [2.0, 14.0] is the window the backtest was
+    # validated on (NOT the shared Longshot-calibrated 5/13 defaults).
+    "fair_value": {
+        "min_edge_pct":       0.03,
+        "time_stop_minutes":  14,
+        "max_positions":      8,
+        "position_size_pct":  0.01,
+        "min_tte_minutes":    2.0,
+        "max_tte_minutes":    14.0,
+        "max_spread_cents":   8.0,
+        "vol_window_minutes": 60,
+        "no_side_only":       True,
+    },
     "favorite_longshot": {
         "longshot_threshold":      0.85,
         "time_stop_minutes":       14,

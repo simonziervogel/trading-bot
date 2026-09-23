@@ -91,6 +91,21 @@ def main():
                    default=int(os.getenv("FAIR_VALUE_TIME_STOP", "14")))
     p.add_argument("--fair-value-vol-window", type=int,
                    default=int(os.getenv("FAIR_VALUE_VOL_WINDOW", "60")))
+    # Fair value uses its own TTE window — the shared --min/max-tte-minutes
+    # defaults (5/13) are calibrated for Longshot, while the validated
+    # fair-value backtest ran on [2.0, 14.0].
+    p.add_argument("--fair-value-min-tte", type=float,
+                   default=float(os.getenv("FAIR_VALUE_MIN_TTE", "2.0")))
+    p.add_argument("--fair-value-max-tte", type=float,
+                   default=float(os.getenv("FAIR_VALUE_MAX_TTE", "14.0")))
+    p.add_argument("--fair-value-no-side-only", action="store_true", default=False,
+                   help="Only take NO-side signals (the side the backtest edge is on)")
+
+    # Live-session hygiene (all strategies)
+    p.add_argument("--entry-cutoff-minutes", type=float,
+                   default=float(os.getenv("ENTRY_CUTOFF_MINUTES", "0")),
+                   help="Stop opening new positions this many minutes before session end, "
+                        "so hold-to-expiry positions settle instead of being force-closed")
 
     # momentum (trend-continuation) params
     p.add_argument("--trend-threshold", type=float,
@@ -135,10 +150,11 @@ def main():
             min_edge_pct       = args.fair_value_min_edge,
             time_stop_minutes  = args.fair_value_time_stop,
             max_positions      = args.max_positions,
-            min_tte_minutes    = args.min_tte_minutes,
-            max_tte_minutes    = args.max_tte_minutes,
+            min_tte_minutes    = args.fair_value_min_tte,
+            max_tte_minutes    = args.fair_value_max_tte,
             max_spread_cents   = args.max_spread_cents,
             vol_window_minutes = args.fair_value_vol_window,
+            no_side_only       = args.fair_value_no_side_only,
         )
     else:
         strategy = MomentumStrategy(
@@ -153,11 +169,12 @@ def main():
         )
 
     engine = PaperTradingEngine(
-        strategy          = strategy,
-        initial_cash      = args.initial_cash,
-        scan_interval_sec = args.scan_interval,
-        log_dir           = args.log_dir,
-        trading_window    = trading_window,
+        strategy             = strategy,
+        initial_cash         = args.initial_cash,
+        scan_interval_sec    = args.scan_interval,
+        log_dir              = args.log_dir,
+        trading_window       = trading_window,
+        entry_cutoff_minutes = args.entry_cutoff_minutes,
     )
     engine.run(duration_minutes=args.duration_minutes)
 

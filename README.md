@@ -115,7 +115,8 @@ Root-level scripts are thin CLI entry points over the package:
 | `compare_periods.py` | Runs all 3 backtestable strategies across calendar months, writes `results/period_comparison.csv` |
 | `db_ingest.py` | Ingest run results into local SQLite database |
 | `market_analysis.py` | Standalone live market sampling tool (spreads, volatility) |
-| `run_daily.bat` | Windows scheduled task script (runs daily at 15:30) |
+| `run_fair_value_live.bat` | Ad-hoc live validation run (NO side, auto-ingests results) |
+| `run_daily.bat` | Legacy Longshot scheduled run — task now disabled, see Live validation |
 | `analysis.ipynb` | Notebook tying the above together — see link above |
 
 ## Setup
@@ -165,10 +166,12 @@ jupyter notebook analysis.ipynb
 pytest -q
 ```
 
-101 tests covering fee calculation (including cent rounding), time
+113 tests covering fee calculation (including cent rounding), time
 utilities, digital-option pricing, Sharpe-ratio calculation, strategy signal
-logic (all four strategies), and each backtest engine's no-lookahead
-guarantee and executable-price fill model.
+logic (all four strategies), each backtest engine's no-lookahead guarantee
+and executable-price fill model, and the live-run config guards (NO-side-only
+enforcement, entry cutoff, and that the live config stays ingestible by the
+database registry).
 
 ## Configuration (`.env`)
 
@@ -231,6 +234,45 @@ not a claim this persists forever, but no longer a single exciting backtest
 number either.
 
 ![Fair value equity curve (full May 2026, corrected fill model)](docs/images/fair_value_may_full_equity.png)
+
+### Live validation (in progress)
+
+Every result above is still a *backtest* — modeled fills, modeled fees. The
+Fair Value NO-side signal is now also running in the live paper-trading
+engine against real quotes, real spreads and real latency, which is the one
+thing more backtesting cannot provide. Started 2026-09-23; results
+accumulate in `trading.db` and will be reported here once N is meaningful.
+
+Run it with `run_fair_value_live.bat` (ad-hoc — start it whenever, it ingests
+its own results afterwards). Config deliberately matches the validated
+backtest exactly: TTE [2.0, 14.0], min_edge 0.03, 60-min realized-vol
+window, enforced by a test that fails if the config and the DB ingest
+registry ever drift apart.
+
+Two deliberate choices worth stating plainly:
+
+- **NO side only.** The validated edge is exclusively on side=no, which is
+  17.6% of signals — trading both sides would spend ~82% of position slots
+  on the no-edge YES population and slow relevant evidence by ~6x. This is
+  pre-registered hypothesis testing (testing exactly the hypothesis that
+  survived out-of-sample), not post-hoc selection. It does mean the live run
+  cannot independently re-discover a YES-side edge, which is an accepted
+  trade-off, not an oversight.
+- **No trading-window restriction**, unlike Longshot. Checked against the
+  May data first: the side=no edge appears in all four time segments at
+  similar magnitude (EV/contract +0.12 to +0.17, all z > 3.9), so there's
+  nothing to gain by restricting hours.
+
+Sessions stop opening new positions 16 minutes before they end
+(`--entry-cutoff-minutes`), so hold-to-expiry positions settle naturally as
+`EXPIRED` (fee-free) rather than being force-closed at `session_end` (exited
+at bid *and* charged an exit fee). Any residual `session_end` trades should
+be excluded when analysing — they didn't settle, so they don't represent the
+strategy that was validated.
+
+Longshot's scheduled daily run has been disabled: across 26 live sessions it
+accumulated -$1,615 (9.7% average win rate), so it isn't worth the machine
+time next to this.
 
 ### Momentum — debunked, kept as a documented negative result
 

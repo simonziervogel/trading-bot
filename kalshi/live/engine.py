@@ -62,6 +62,19 @@ def in_trading_window(window, now_utc: datetime) -> bool:
     return cur >= start or cur < end   # window crosses midnight
 
 
+def entries_allowed(remaining_minutes: float, cutoff_minutes: float) -> bool:
+    """False once the session is inside its entry cutoff.
+
+    Exits and settlement keep running when this is False — only NEW entries
+    stop, so hold-to-expiry positions can reach EXPIRED (fee-free) instead of
+    being force-closed at session_end (exited at bid AND charged an exit fee).
+    cutoff_minutes <= 0 disables the cutoff entirely.
+    """
+    if cutoff_minutes <= 0:
+        return True
+    return remaining_minutes > cutoff_minutes
+
+
 def _parse_expires_at(raw) -> Optional[datetime]:
     """Parse ISO close_time string to UTC-aware datetime, or None."""
     if not raw:
@@ -102,6 +115,7 @@ class PaperTradingEngine:
         cooldown_sec:       int   = DEFAULT_COOLDOWN_SEC,
         log_dir:            str   = "logs",
         trading_window      = None,
+        entry_cutoff_minutes: float = 0.0,
     ):
         self.strategy          = strategy
         self.series            = series or ["KXBTC15M", "KXETH15M", "KXUSD15M"]
@@ -110,6 +124,11 @@ class PaperTradingEngine:
         self.daily_loss_limit  = daily_loss_limit
         self.cooldown_sec      = cooldown_sec
         self.trading_window    = trading_window
+        # Stop opening new positions this many minutes before the session
+        # ends, so hold-to-expiry positions can settle naturally (EXPIRED,
+        # fee-free) instead of being force-closed at session_end (exited at
+        # bid AND charged an exit fee). 0 = off, preserving old behavior.
+        self.entry_cutoff_minutes = entry_cutoff_minutes
 
         # Execution params pulled from the strategy object
         self.take_profit_cents = getattr(strategy, "take_profit_cents", None)
@@ -433,6 +452,22 @@ class PaperTradingEngine:
                             wstart = ""
                         msg = (
                             f"WAITING (window opens {wstart} UTC) | "
+                            f"Pos: {len(self.positions)} | "
+                            f"Equity: ${self.equity:,.2f} | "
+                            f"PnL: ${self.daily_pnl:+,.2f} | "
+                            f"Trades: {len(self.closed_trades)}"
+                        )
+                        print(f"[{now_local.strftime('%H:%M:%S')}] {msg}")
+                        time.sleep(self.scan_interval_sec)
+                        continue
+
+                    # --- Entry cutoff before session end ---
+                    # Exits and settlement above still run; only NEW entries
+                    # stop, so open positions can reach EXPIRED naturally.
+                    remaining = duration_minutes - elapsed
+                    if not entries_allowed(remaining, self.entry_cutoff_minutes):
+                        msg = (
+                            f"SETTLING (no new entries, {remaining:.0f} min left) | "
                             f"Pos: {len(self.positions)} | "
                             f"Equity: ${self.equity:,.2f} | "
                             f"PnL: ${self.daily_pnl:+,.2f} | "

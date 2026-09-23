@@ -91,6 +91,7 @@ class FairValueStrategy(Strategy):
         max_tte_minutes:         float = 14.0,
         max_spread_cents:        float = 8.0,
         vol_window_minutes:      int   = _VOL_WINDOW_MINUTES,
+        no_side_only:            bool  = False,
     ):
         self.min_edge_pct       = min_edge_pct
         self.time_stop_minutes  = time_stop_minutes
@@ -100,6 +101,11 @@ class FairValueStrategy(Strategy):
         self.max_tte_minutes    = max_tte_minutes
         self.max_spread_cents   = max_spread_cents
         self.vol_window_minutes = vol_window_minutes
+        # Live validation runs NO-side-only: that's the side the backtest
+        # edge is concentrated on, so trading both sides would spend most
+        # position slots on the no-edge YES population. Default off keeps
+        # backtest parity.
+        self.no_side_only       = no_side_only
         # TradingEngine reads these via getattr; fair_value has no fixed TP/SL
         self.take_profit_cents  = None
         self.stop_loss_cents    = None
@@ -155,13 +161,20 @@ class FairValueStrategy(Strategy):
         edge_yes = p_yes - yes_ask_f - taker_fee(yes_ask_f, 1)
         edge_no  = (1.0 - p_yes) - no_ask_f - taker_fee(no_ask_f, 1)
 
-        if edge_yes < self.min_edge_pct and edge_no < self.min_edge_pct:
-            return None
-
-        if edge_yes >= edge_no:
-            side, edge = "yes", edge_yes
-        else:
+        if self.no_side_only:
+            # Only the NO side carries a validated edge — ignore the YES side
+            # entirely rather than letting a larger YES edge win the compare.
+            if edge_no < self.min_edge_pct:
+                return None
             side, edge = "no", edge_no
+        else:
+            if edge_yes < self.min_edge_pct and edge_no < self.min_edge_pct:
+                return None
+
+            if edge_yes >= edge_no:
+                side, edge = "yes", edge_yes
+            else:
+                side, edge = "no", edge_no
 
         return {
             "side": side, "type": "fair_value",
@@ -180,4 +193,5 @@ class FairValueStrategy(Strategy):
             "max_tte_minutes":    self.max_tte_minutes,
             "max_spread_cents":   self.max_spread_cents,
             "vol_window_minutes": self.vol_window_minutes,
+            "no_side_only":       self.no_side_only,
         }
