@@ -1,5 +1,7 @@
 # Kalshi Paper Trading Bot
 
+[![tests](https://github.com/simonziervogel/trading-bot/actions/workflows/tests.yml/badge.svg)](https://github.com/simonziervogel/trading-bot/actions/workflows/tests.yml)
+
 Paper trading bot for [Kalshi](https://kalshi.com) binary markets, focused on 15-minute BTC/ETH price contracts (KXBTC15M, KXETH15M).
 
 Trades are **simulated** — no real orders are placed. All fills use live production market data.
@@ -307,3 +309,48 @@ the engines take the most *recent* qualifying markets in a date range, so
 each "month" is actually only its last ~1.5 days, not a representative
 average. Both issues affect the same file — don't cite numbers from it
 without fixing both first.
+
+## Known Limitations
+
+Collected in one place rather than scattered through the findings, because
+these are the things that would actually undermine the results if they went
+the wrong way.
+
+**Order-book depth is not modeled.** Backtests assume a fill at the touch
+(`yes_ask` / `1 - yes_bid`) regardless of order size. Kalshi's historical
+candlestick API exposes no depth data at all, so this cannot be measured
+retroactively — only the current book is available, and "a current book does
+not recreate the book at an earlier time." Position sizes here are small (1%
+of $10k, a few hundred contracts), so walking the book is unlikely to matter
+much at this scale, but the assumption is unverified and would break for
+meaningful size.
+
+**Taker fees are assumed on every fill.** Maker fees are roughly a quarter of
+taker on series that support them, and these two series report
+`fee_type: "quadratic"` (not `"quadratic_with_maker_fees"`), which suggests
+maker rebates may not apply here at all. Assuming taker is the conservative
+direction — it can only understate profitability — but a limit-order variant
+would need a fill-probability model, which does not exist here.
+
+**The fee formula is corroborated, not primary-sourced.** `fee_multiplier`
+and `fee_type` were read directly from Kalshi's live API for both series, and
+the `ceil`-to-the-cent rounding matches multiple independent descriptions and
+a published reference point ($1.75 per 100 contracts at 50¢) exactly. But
+Kalshi's own fee-schedule PDF was unreachable at verification time (HTTP 429),
+so the last step to a primary source was not taken.
+
+**One venue, one instrument family, limited history.** Everything rests on
+KXBTC15M/KXETH15M between Dec 2025 and Jul 2026. Nothing here says the effect
+generalizes to other Kalshi series, other venues, or other market regimes.
+
+**Live validation has barely started.** The Fair Value NO-side signal is
+running live, but N is still near zero. Until it accumulates, every claim
+above is a backtest claim.
+
+**Favorite-Longshot's headline number predates the fill-model fix.** The
+N=2033 Feb–Mar 2026 result was computed with the mid-price bug present. It
+has not been re-run on that exact window with the corrected engine, so treat
+it as indicative rather than current.
+
+**`compare_periods.py` is superseded and has its own sampling bug** — see the
+Period comparison note above. Don't cite numbers from it.
