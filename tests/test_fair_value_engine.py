@@ -180,3 +180,36 @@ class TestFetchMarketsFiltersMissingStrike:
         markets = engine._fetch_markets("KXBTC15M", cfg)
         tickers = {m["ticker"] for m in markets}
         assert tickers == {"A"}
+
+
+class TestImplausibleStrikeGuard:
+    """Kalshi has been observed returning floor_strike off by ~4 orders of
+    magnitude (0.22 instead of 2229.30 on 2026-04-13). Without a guard those
+    markets price as deep-ITM (model_prob=1.0) and emit a bogus signal."""
+
+    def test_implausible_strike_is_skipped(self):
+        close  = datetime(2026, 6, 1, 14, 0, 0)
+        cfg    = FairValueBacktestConfig(min_tte=2.0, max_tte=14.0, min_edge_pct=0.03)
+        # Real-world shape of the glitch: spot ~2229, strike 0.22 (ratio ~10000)
+        market = _market("T", close, floor_strike=0.22, result="yes")
+        candles = [_candle(0.50, close - timedelta(minutes=t)) for t in (12, 10, 8)]
+        engine = _make_engine()
+        engine.client.get_historical_market_candlesticks.return_value = {"candlesticks": candles}
+        series = _flat_price_series(close, spot=2229.30)
+
+        assert engine._scan_market(market, "KXETH15M", series, cfg) is None
+
+    def test_plausible_strike_still_signals(self):
+        """The guard must not reject normal markets — same setup, sane strike."""
+        close  = datetime(2026, 6, 1, 14, 0, 0)
+        cfg    = FairValueBacktestConfig(min_tte=2.0, max_tte=14.0, min_edge_pct=0.03)
+        # Spot well below strike -> NO side carries the edge
+        market = _market("T", close, floor_strike=2600.0, result="no")
+        candles = [_candle(0.50, close - timedelta(minutes=t)) for t in (12, 10, 8)]
+        engine = _make_engine()
+        engine.client.get_historical_market_candlesticks.return_value = {"candlesticks": candles}
+        series = _flat_price_series(close, spot=2229.30)
+
+        obs = engine._scan_market(market, "KXETH15M", series, cfg)
+        assert obs is not None
+        assert obs.side == "no"

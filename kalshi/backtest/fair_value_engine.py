@@ -27,6 +27,16 @@ _BINANCE_SYMBOL = {"KXBTC15M": "BTCUSDT", "KXETH15M": "ETHUSDT"}
 _API_DELAY_SEC  = 0.12
 _MIN_CANDLES    = 3
 
+# Sanity bounds on spot/strike. These contracts settle against the underlying
+# 15 minutes after the strike is fixed, so the ratio is normally within a
+# fraction of a percent of 1.0 — deliberately generous bounds that only catch
+# gross data corruption, not legitimate market moves. Kalshi has been observed
+# returning floor_strike off by ~4 orders of magnitude (e.g. 0.22 instead of
+# 2229.30 on 2026-04-13); without this guard those rows produce model_prob=1.0
+# and a bogus signal.
+_MIN_SPOT_STRIKE_RATIO = 0.5
+_MAX_SPOT_STRIKE_RATIO = 2.0
+
 
 @dataclass
 class FairValueBacktestConfig:
@@ -268,6 +278,14 @@ class FairValueBacktestEngine:
             candle_ms = utc_timestamp(candle_time) * 1000
             spot = price_series.spot_at(candle_ms)
             if spot is None:
+                continue
+            # Reject implausible strikes (bad Kalshi data) rather than pricing
+            # off them — see _MIN/_MAX_SPOT_STRIKE_RATIO above.
+            ratio = spot / strike
+            if not (_MIN_SPOT_STRIKE_RATIO < ratio < _MAX_SPOT_STRIKE_RATIO):
+                if self.verbose:
+                    print(f"  [WARN] {ticker}: implausible spot/strike={ratio:.4g} "
+                          f"(spot={spot}, strike={strike}) — skipping")
                 continue
             closes = price_series.trailing_closes(candle_ms, config.vol_window_minutes * 60_000)
             sigma = realized_vol_annualized(closes)

@@ -48,8 +48,9 @@ opening level." `kalshi/utils/pricing.py` prices that in closed form (a
 zero-drift lognormal model: spot + realized volatility from Binance, strike
 + time-to-expiry from Kalshi) and trades whichever side disagrees with
 Kalshi's own quote by more than the round-trip cost. **Backtested,
-out-of-sample tested, and re-confirmed on a full uncapped month of
-data — the strongest, most validated result in this project.** See Key
+out-of-sample tested, and re-confirmed across six consecutive uncapped
+months (Jan–Jun 2026) — positive and individually significant in every
+one. The strongest, most validated result in this project.** See Key
 Findings below.
 
 ### MeanReversionStrategy — reversal (documented negative result)
@@ -168,7 +169,7 @@ jupyter notebook analysis.ipynb
 pytest -q
 ```
 
-113 tests covering fee calculation (including cent rounding), time
+115 tests covering fee calculation (including cent rounding), time
 utilities, digital-option pricing, Sharpe-ratio calculation, strategy signal
 logic (all four strategies), each backtest engine's no-lookahead guarantee
 and executable-price fill model, and the live-run config guards (NO-side-only
@@ -236,6 +237,49 @@ not a claim this persists forever, but no longer a single exciting backtest
 number either.
 
 ![Fair value equity curve (full May 2026, corrected fill model)](docs/images/fair_value_may_full_equity.png)
+
+#### Month by month, Jan–Jun 2026
+
+The obvious objection to a single month is regime dependence. Every full
+month of available history was re-run uncapped with the corrected engine
+(~4,350–5,850 scanned markets each, ~32k total):
+
+| Month | NO-signal rate | N (no) | Win rate | EV/contract | z | mean model_p |
+|---|---|---|---|---|---|---|
+| Jan | 8.1% | 351 | 68.1% | +0.171 | +7.08 | 0.705 |
+| Feb | 24.5% | 1,294 | 61.3% | +0.105 | +8.84 | 0.555 |
+| Mar | 47.1% | 2,726 | 58.5% | +0.085 | +10.74 | 0.512 |
+| Apr | 64.5% | 3,617 | 53.7% | +0.043 | +7.33 | 0.464 |
+| May | 17.6% | 1,029 | 65.1% | +0.136 | +9.85 | 0.643 |
+| Jun | 9.7% | 546 | 66.7% | +0.168 | +8.67 | 0.649 |
+| **Pooled** | | **9,563** | **58.6%** | **+0.086** | **+20.15** | |
+
+**Positive and individually significant in all six months** (z between +7.1
+and +10.7). That consistency is the real claim here — more so than the
+pooled z, which mixes regimes that behave quite differently.
+
+![Fair value edge by month and the selectivity relationship](docs/images/fair_value_monthly.png)
+
+**Selectivity tracks edge, monotonically across all six months.** The rarer
+the signal, the better the average trade: 8.1% of markets → +0.171,
+9.7% → +0.168, 17.6% → +0.136, 24.5% → +0.105, 47.1% → +0.085,
+64.5% → +0.043. Signal frequency in turn tracks `mean model_p`, i.e. which
+way the underlying drifted inside the 15-minute windows that month. Part of
+this is mechanical — firing more often means including more marginal
+trades — but the practical consequence is concrete: a *fixed* `min_edge` of
+0.03 does not hold selectivity constant across regimes, and an adaptive
+threshold is the obvious next experiment.
+
+**The main remaining doubt is quote staleness, not statistics.** +0.086 per
+contract on ~50-cent contracts is ~16% per trade, which is very large for a
+liquid market. The mid-price bug, lookahead and fee rounding are all ruled
+out. What is *not* ruled out: the backtest compares Kalshi's bid/ask at a
+1-minute candle close against the Binance spot at the same timestamp. If
+Kalshi's quotes lag Binance moves by even seconds, the model would show
+"predictive power" that is really just Kalshi not having repriced yet — and
+that would not be tradeable in practice. This is the leading candidate
+explanation for an edge this size, and it is exactly what the live run
+settles, because live trading has real latency.
 
 ### Live validation (in progress)
 
@@ -340,8 +384,16 @@ Kalshi's own fee-schedule PDF was unreachable at verification time (HTTP 429),
 so the last step to a primary source was not taken.
 
 **One venue, one instrument family, limited history.** Everything rests on
-KXBTC15M/KXETH15M between Dec 2025 and Jul 2026. Nothing here says the effect
-generalizes to other Kalshi series, other venues, or other market regimes.
+KXBTC15M/KXETH15M between Dec 2025 and Jul 2026 — six full months of
+validation, which is consistent but still one venue and one instrument
+family. Nothing here says the effect generalizes elsewhere.
+
+**Quote staleness is not ruled out.** The backtest matches Kalshi's
+1-minute candle bid/ask against the Binance spot at that timestamp. If
+Kalshi's quotes lag Binance by seconds, part of the measured edge is just
+Kalshi not having repriced yet, which would not survive real execution
+latency. This is the single most likely explanation for an edge of this
+size and is what the live run is there to settle.
 
 **Live validation has barely started.** The Fair Value NO-side signal is
 running live, but N is still near zero. Until it accumulates, every claim
