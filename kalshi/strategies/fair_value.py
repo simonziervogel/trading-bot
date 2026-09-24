@@ -14,9 +14,9 @@ from datetime import datetime, timezone
 from kalshi.strategies.base import Strategy
 from kalshi.utils.pricing import digital_call_probability, realized_vol_annualized
 from kalshi.utils.fees import taker_fee
+from kalshi.utils.market import BINANCE_SYMBOL
 
 
-_BINANCE_SYMBOL = {"KXBTC15M": "BTCUSDT", "KXETH15M": "ETHUSDT"}
 _VOL_WINDOW_MINUTES = 60
 
 # Module-level Binance klines cache: symbol -> (closes, fetched_at)
@@ -31,7 +31,7 @@ def _get_binance_closes(ticker: str, window_minutes: int = _VOL_WINDOW_MINUTES):
     that share the same underlying (e.g. multiple open KXBTC15M contracts).
     """
     series = ticker.split("-")[0] if "-" in ticker else ticker
-    symbol = _BINANCE_SYMBOL.get(series)
+    symbol = BINANCE_SYMBOL.get(series)
     if not symbol:
         return None
 

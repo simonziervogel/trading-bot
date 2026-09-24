@@ -10,10 +10,10 @@ import requests
 from datetime import datetime, timezone
 
 from kalshi.strategies.base import Strategy
+from kalshi.utils.market import BINANCE_SYMBOL
 
 
 # Module-level Binance momentum cache: symbol -> (momentum_pct, fetched_at)
-_BINANCE_SYMBOL = {"KXBTC15M": "BTCUSDT", "KXETH15M": "ETHUSDT"}
 _BINANCE_CACHE: dict[str, tuple[float, datetime]] = {}
 _BINANCE_CACHE_TTL = 30.0
 
@@ -25,7 +25,7 @@ def _get_binance_momentum(ticker: str, window_minutes: int) -> float | None:
     multiple Kalshi tickers share the same underlying asset.
     """
     series = ticker.split("-")[0] if "-" in ticker else ticker
-    symbol = _BINANCE_SYMBOL.get(series)
+    symbol = BINANCE_SYMBOL.get(series)
     if not symbol:
         return None
 

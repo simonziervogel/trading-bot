@@ -41,6 +41,33 @@ def parse_mid(candle: dict) -> tuple[float | None, str]:
     return mid, source
 
 
+# Kalshi 15-minute series -> Binance spot symbol used as the underlying proxy.
+#
+# Single source of truth: both the live strategy (kalshi/strategies/fair_value.py)
+# and the backtest engine (kalshi/backtest/fair_value_engine.py) import this.
+# They previously kept separate copies, which is how the two silently drift.
+#
+# Every series here has the same contract structure — strike_type
+# "greater_or_equal", settling on "close >= open" over 15 minutes against that
+# asset's CF Benchmarks Real-Time Index (BRTI, SOLUSDRTI, XRPUSDRTI, ...).
+# Binance spot is a proxy for that index; the basis is tight on BTC/ETH but
+# wider and noisier on thin alts, which matters when reading their results.
+#
+# ADA/BCH/TON also list 15M series but have no historical markets, so they
+# cannot be backtested and are deliberately absent.
+BINANCE_SYMBOL = {
+    "KXBTC15M":  "BTCUSDT",
+    "KXETH15M":  "ETHUSDT",
+    "KXSOL15M":  "SOLUSDT",
+    "KXXRP15M":  "XRPUSDT",
+    "KXDOGE15M": "DOGEUSDT",
+    "KXBNB15M":  "BNBUSDT",
+    "KXHYPE15M": "HYPEUSDT",
+    "KXNEAR15M": "NEARUSDT",
+    "KXZEC15M":  "ZECUSDT",
+}
+
+
 def get_series(ticker: str) -> str:
     """Extract series prefix from a full Kalshi ticker.
 

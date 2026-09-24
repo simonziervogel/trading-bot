@@ -18,12 +18,11 @@ from typing import Optional
 
 from kalshi.client import KalshiClient
 from kalshi.utils.time import to_naive_utc, utc_timestamp, parse_optional_dt
-from kalshi.utils.market import parse_quote, time_segment
+from kalshi.utils.market import parse_quote, time_segment, BINANCE_SYMBOL
 from kalshi.utils.pricing import digital_call_probability, realized_vol_annualized
 from kalshi.utils.fees import taker_fee
 from kalshi.data.binance_history import fetch_klines_range, PriceSeries
 
-_BINANCE_SYMBOL = {"KXBTC15M": "BTCUSDT", "KXETH15M": "ETHUSDT"}
 _API_DELAY_SEC  = 0.12
 _MIN_CANDLES    = 3
 
@@ -193,7 +192,7 @@ class FairValueBacktestEngine:
 
     def _load_price_series(self, series: str, markets: list,
                             config: FairValueBacktestConfig) -> Optional[PriceSeries]:
-        symbol = _BINANCE_SYMBOL.get(series)
+        symbol = BINANCE_SYMBOL.get(series)
         if not symbol or not markets:
             return None
 
