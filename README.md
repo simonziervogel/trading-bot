@@ -47,11 +47,11 @@ cash-or-nothing digital options on "does the price finish above its own
 opening level." `kalshi/utils/pricing.py` prices that in closed form (a
 zero-drift lognormal model: spot + realized volatility from Binance, strike
 + time-to-expiry from Kalshi) and trades whichever side disagrees with
-Kalshi's own quote by more than the round-trip cost. **Backtested,
-out-of-sample tested, and re-confirmed across six consecutive uncapped
-months (Jan–Jun 2026) — positive and individually significant in every
-one. The strongest, most validated result in this project.** See Key
-Findings below.
+Kalshi's own quote by more than the round-trip cost. **Retracted: the
+reported edge was a 60-second lookahead in the price series, and the model's
+Binance proxy cannot resolve these contracts near the strike regardless.**
+The post-mortem is the most useful thing in this repo — see Key Findings
+below.
 
 ### MeanReversionStrategy — reversal (documented negative result)
 Buy YES after a down-move showing signs of recovery, NO after an up-move
@@ -115,7 +115,6 @@ Root-level scripts are thin CLI entry points over the package:
 | `backtest.py` | Favorite-Longshot backtest CLI |
 | `backtest_momentum.py` | Momentum backtest CLI |
 | `backtest_fair_value.py` | Fair-value backtest CLI |
-| `compare_periods.py` | Runs all 3 backtestable strategies across calendar months, writes `results/period_comparison.csv` |
 | `db_ingest.py` | Ingest run results into local SQLite database |
 | `market_analysis.py` | Standalone live market sampling tool (spreads, volatility) |
 | `run_fair_value_live.bat` | Ad-hoc live validation run (NO side, auto-ingests results) |
@@ -147,9 +146,6 @@ python backtest_fair_value.py --max-markets 500 --plot results/fair_value
 
 # Train/test split (out-of-sample check) on a calendar window
 python backtest_fair_value.py --from 2026-04-15 --to 2026-06-06 --test-after 2026-05-24
-
-# Compare all 3 backtestable strategies across calendar months
-python compare_periods.py
 
 # Analyse paper-trading results
 python db_ingest.py --all
@@ -186,7 +182,12 @@ KALSHI_KEY_FILE=path/to/your.key
 
 ## Key Findings
 
-### Fill Model Fix (read this first)
+The headline here is a negative result arrived at honestly: a six-month,
+individually-significant, cross-instrument-replicated edge that turned out to
+be a timestamp bug. Two independent measurement errors are documented below,
+in the order they were found. **The lookahead section is the important one.**
+
+### Fill Model Fix — the first of two measurement errors
 
 All three backtest engines originally priced trades at the **midpoint** of
 Kalshi's quoted bid/ask — never actually fillable; buying YES costs the ask,
@@ -208,86 +209,147 @@ unrounded). Full re-validation, before vs. after:
 
 **Momentum's edge was a mid-price artifact** — it collapses to essentially
 zero once real fill prices are used, in both the base run and out-of-sample.
-**Fair Value's edge survives** — effect size (EV/contract) is nearly
-unchanged, it's just measured on a smaller, more honestly-filtered sample
-(the fee-adjusted edge threshold now correctly excludes trades that only
-looked profitable because of the mid-price shortcut). This is exactly the
-outcome this check was for: one finding got debunked, the other got
-independently strengthened by surviving a test that could have killed it.
+**Fair Value's edge survived this particular check** — effect size
+(EV/contract) was nearly unchanged, just measured on a smaller, more honestly
+filtered sample.
 
-### Fair Value — the strongest result
+> **Superseded.** Fair Value's edge did not survive the *next* check. A
+> 60-second lookahead in the Binance price series, found later and documented
+> in the section below, accounts for all of it. Surviving the fill-model fix
+> was real but it was not sufficient — the two bugs were independent, and
+> fixing one said nothing about the other.
 
-Full calendar month, uncapped (`--from 2026-05-01 --to 2026-05-31
---max-markets 5000`; 2,921–2,923 markets per series, no cap hit, confirmed
-covering the entire month, not a truncated tail):
+### Fair Value — retracted: the edge was a lookahead artifact
 
-- **side=no: N=1,029, win rate 65.1%, EV/contract +0.136, z=+9.85**
-- side=yes: N=4,815, EV/contract +0.011, z=+3.89 — a much smaller, less
-  reliable edge, consistent with side=no being where the real signal lives
-- Overall (both sides): z=+7.67
+This section previously reported a NO-side edge of +0.086 EV/contract over
+9,563 signals, positive and individually significant in all six months tested
+(z between +7.1 and +10.7). **That result was wrong.**
 
-This is now backed by three independent samples at increasing scale, all
-pointing the same direction: an initial 4-day sample (N=120 → N=31 corrected),
-a 6-week out-of-sample train/test split (N=284 → N=233 corrected, train
-z=+3.91 / test z=+6.17 independently), and this full-month run (N=1,029,
-z=+9.85). Effect size (EV/contract) is stable in the +0.14 to +0.22 range
-across all of them — the exact number moves with sample composition, but the
-direction and rough magnitude don't. Still one calendar month, one regime —
-not a claim this persists forever, but no longer a single exciting backtest
-number either.
+The cause was a 60-second lookahead in the Binance price series, found on
+2026-10-09 while measuring something else. `PriceSeries` keyed each 1-minute
+kline by its **open** time while storing that kline's **close** price. A bar
+opening at T does not close until T+60s, so `spot_at(T)` returned a price up
+to a minute into the future — and every fair-value backtest priced off it.
 
-![Fair value equity curve (full May 2026, corrected fill model)](docs/images/fair_value_may_full_equity.png)
+The live strategy was never affected: it reads the in-progress kline from
+Binance's live endpoint, whose close *is* the current price. That asymmetry is
+the entire backtest-versus-live gap.
 
-#### Month by month, Jan–Jun 2026
+#### Why one minute mattered this much
 
-The obvious objection to a single month is regime dependence. Every full
-month of available history was re-run uncapped with the corrected engine
-(~4,350–5,850 scanned markets each, ~32k total):
+The model divides by `sigma*sqrt(tau)`, which on a 15-minute contract is tiny:
+**20.6bp** at 14 minutes and **7.8bp** at 2 minutes (sigma=0.40, the observed
+July median). One minute of BTC movement at that volatility is ~5.5bp.
 
-| Month | NO-signal rate | N (no) | Win rate | EV/contract | z | mean model_p |
-|---|---|---|---|---|---|---|
-| Jan | 8.1% | 351 | 68.1% | +0.171 | +7.08 | 0.705 |
-| Feb | 24.5% | 1,294 | 61.3% | +0.105 | +8.84 | 0.555 |
-| Mar | 47.1% | 2,726 | 58.5% | +0.085 | +10.74 | 0.512 |
-| Apr | 64.5% | 3,617 | 53.7% | +0.043 | +7.33 | 0.464 |
-| May | 17.6% | 1,029 | 65.1% | +0.136 | +9.85 | 0.643 |
-| Jun | 9.7% | 546 | 66.7% | +0.168 | +8.67 | 0.649 |
-| **Pooled** | | **9,563** | **58.6%** | **+0.086** | **+20.15** | |
+| TTE | `sigma*sqrt(tau)` | P(yes) at −20bp | at 0 | at +20bp |
+|---|---|---|---|---|
+| 14 min | 20.6bp | 0.166 | 0.500 | 0.833 |
+| 4 min | 11.0bp | 0.035 | 0.500 | 0.965 |
+| 2 min | 7.8bp | 0.005 | 0.500 | 0.995 |
 
-**Positive and individually significant in all six months** (z between +7.1
-and +10.7). That consistency is the real claim here — more so than the
-pooled z, which mixes regimes that behave quite differently.
+A 20bp deviation of spot from strike turns a coin flip into 83%. Sixty seconds
+of foresight is worth roughly ten probability points — the same order as the
+edge being claimed.
 
-![Fair value edge by month and the selectivity relationship](docs/images/fair_value_monthly.png)
+#### Corrected result
 
-**Selectivity tracks edge, monotonically across all six months.** The rarer
-the signal, the better the average trade: 8.1% of markets → +0.171,
-9.7% → +0.168, 17.6% → +0.136, 24.5% → +0.105, 47.1% → +0.085,
-64.5% → +0.043. Signal frequency in turn tracks `mean model_p`, i.e. which
-way the underlying drifted inside the 15-minute windows that month. Part of
-this is mechanical — firing more often means including more marginal
-trades — but the practical consequence is concrete: a *fixed* `min_edge` of
-0.03 does not hold selectivity constant across regimes, and an adaptive
-threshold is the obvious next experiment.
+July 2026 BTC/ETH re-run uncapped with the fix (5,848 markets scanned, 5,816
+signals):
 
-**The main remaining doubt is quote staleness, not statistics.** +0.086 per
-contract on ~50-cent contracts is ~16% per trade, which is very large for a
-liquid market. The mid-price bug, lookahead and fee rounding are all ruled
-out. What is *not* ruled out: the backtest compares Kalshi's bid/ask at a
-1-minute candle close against the Binance spot at the same timestamp. If
-Kalshi's quotes lag Binance moves by even seconds, the model would show
-"predictive power" that is really just Kalshi not having repriced yet — and
-that would not be tradeable in practice. This is the leading candidate
-explanation for an edge this size, and it is exactly what the live run
-settles, because live trading has real latency.
+| Group | N | Win rate | 95% CI | EV/contract | z |
+|---|---|---|---|---|---|
+| All | 5,816 | 50.0% | [48.7%–51.3%] | −0.0135 | +0.61 |
+| side=yes | 5,771 | 50.2% | [48.9%–51.5%] | −0.0135 | +0.61 |
+| side=no | 45 | 17.8% | [9.3%–31.3%] | −0.0100 | +0.00 |
 
-### Live validation (in progress)
+Mean taker fee on these fills is 0.0199, so gross EV/contract is about +0.006:
+indistinguishable from zero. The strategy extracts no information and pays the
+transaction cost. Bucketing by the model's own confidence `|d2|` does not
+rescue it — every populated bucket is EV-negative (0–0.25: −0.0290,
+0.25–0.5: −0.0207, 0.5–1: −0.0070, 1–2: −0.0111). Win rate does rise
+monotonically with `|d2|` (37.7% to 62.6%), but prices already reflect that,
+which is what an efficient market looks like.
 
-Every result above is still a *backtest* — modeled fills, modeled fees. The
-Fair Value NO-side signal is now also running in the live paper-trading
-engine against real quotes, real spreads and real latency, which is the one
-thing more backtesting cannot provide. Started 2026-09-23; results
-accumulate in `trading.db` and will be reported here once N is meaningful.
+Replaying all 10,577 previously stored NO signals at their own original entry
+candles — same quotes, same outcomes, only the spot/vol lookup changed — gives
+the same answer from the other direction:
+
+| | signals still clearing threshold | claimed | realized | win rate | 95% CI |
+|---|---|---|---|---|---|
+| with lookahead | 100% | +0.103 | +0.106 | 58.4% | — |
+| without lookahead | 29.3% | +0.076 | +0.043 | 47.8% | [46.1%, 49.6%] |
+
+The top row is the instructive one: claimed and realized edge agreed to within
+0.003. The model looked beautifully calibrated because it genuinely knew the
+next minute.
+
+#### A second, independent problem: the Binance/CF-index basis
+
+Removing the lookahead did not reduce the ~95% signal rate, so something else
+was driving the model to disagree with the market nearly everywhere.
+
+These contracts settle on a CF Benchmarks index, and Kalshi publishes that
+index's value at market open as `floor_strike`. The basis against the Binance
+proxy is therefore directly measurable with no external data source:
+`10000 * (binance_at_open / floor_strike - 1)`.
+
+Over 43,685 signals: median **+5.2bp**, p10 −3.0bp, p90 +13.8bp. A ~17bp
+spread plus a systematic +5bp offset, against a 20.6bp denominator. The offset
+alone biases d2 by +0.25 and P(yes) upward by ~10pp, matching the measured
+−13pp YES-side overconfidence in both direction and magnitude.
+
+Anchoring was validated two ways: the derived market-open times land on a
+15-minute boundary in 100% of rows, and the basis spread is minimal at offset 0
+and grows symmetrically at ±1 and ±2 minutes, while the median stays between
++4.6 and +5.1bp at every offset. So the offset is a real level difference
+between the two sources, not mis-anchoring.
+
+That imposes a hard floor. Comparing the sign of Binance's own 15-minute move
+against how Kalshi actually settled:
+
+| \|Binance move\| | N | disagreement |
+|---|---|---|
+| 0–2bp | 4,664 | **38.1%** |
+| 2–5bp | 5,930 | 15.4% |
+| 5–10bp | 8,884 | 4.8% |
+| 10–20bp | 11,050 | 1.0% |
+| 20–40bp | 8,442 | 0.2% |
+| 40bp+ | 4,715 | 0.1% |
+
+Near the money the proxy carries almost no information about the payoff, and
+that is exactly where the signals sit. This is not a tuning problem: no model
+built on Binance spot can have an edge within ~10bp of the strike, however
+well calibrated it looks.
+
+This also retires the **quote staleness** hypothesis that earlier versions of
+this README named as the leading candidate explanation. The real cause turned
+out to be measurable, and it was not staleness.
+
+### Live validation — what actually flagged the bug
+
+The Fair Value NO-side signal was run live against real quotes, real spreads
+and real latency on 2026-09-24 (`trading.db`, run 36, 13:22–15:22 UTC):
+
+**13 trades, 4W/9L (30.8%), −$525.22 (−5.25%).** All held to expiry, none
+stopped out.
+
+At the time this looked like a regime problem. It was not. Two numbers gave it
+away:
+
+- The NO-signal rate was **93%** (13 of 14 available markets). In the July
+  backtest the NO rate was ~11% of scanned markets. A strategy firing 8x more
+  often than its own backtest is not the same strategy.
+- The backtest's 58.6% sat outside the live 95% CI of [12.7%, 57.6%].
+
+Against the *corrected* backtest the two now agree: corrected NO-side win rate
+is 17.8% with a 95% CI of [9.3%, 31.3%], which contains the live 30.8%. Model
+and reality no longer disagree — they agree there is no edge.
+
+N=13 was never enough to conclude anything on its own, and it did not need to
+be. Its value was as a *consistency check against the backtest*, and that is
+what it delivered. For reference, distinguishing 58.6% from 50% at 80% power
+needs ~207 trades, which at a realistic NO-signal rate is 50–200+ hours of
+continuous runtime.
 
 Run it with `run_fair_value_live.bat` (ad-hoc — start it whenever, it ingests
 its own results afterwards). Config deliberately matches the validated
@@ -344,16 +406,6 @@ the exact Feb–Mar window with the corrected engine is a natural next step,
 lower priority than Fair Value since Longshot's effect was already
 concentrated in one narrow window rather than a broad claim.
 
-### Period comparison (stale — predates the fill-model fix)
-`compare_periods.py` / `results/period_comparison.csv` were generated before
-the mid-price fix above and should be treated as superseded — regenerating
-them is a follow-up, not done in this round. Separately, that script also
-has a real sampling bug: each "month" is capped at 150 markets/series and
-the engines take the most *recent* qualifying markets in a date range, so
-each "month" is actually only its last ~1.5 days, not a representative
-average. Both issues affect the same file — don't cite numbers from it
-without fixing both first.
-
 ## Known Limitations
 
 Collected in one place rather than scattered through the findings, because
@@ -383,26 +435,38 @@ a published reference point ($1.75 per 100 contracts at 50¢) exactly. But
 Kalshi's own fee-schedule PDF was unreachable at verification time (HTTP 429),
 so the last step to a primary source was not taken.
 
-**One venue, one instrument family, limited history.** Everything rests on
-KXBTC15M/KXETH15M between Dec 2025 and Jul 2026 — six full months of
-validation, which is consistent but still one venue and one instrument
-family. Nothing here says the effect generalizes elsewhere.
+**One venue, limited history.** Everything rests on Kalshi 15-minute crypto
+series between Dec 2025 and Jul 2026. A July cross-section across eight series
+(BTC, ETH, SOL, XRP, DOGE, BNB, NEAR, ZEC) was run to test generalization;
+since the underlying engine carried the lookahead bug, those results are
+withdrawn along with the rest. Note also that `spot`/`strike` are stored
+rounded to 2dp, which is too coarse to reconstruct low-priced underlyings
+(XRP ~1.04, DOGE ~0.07) after the fact — a logging decision worth making
+differently next time.
 
-**Quote staleness is not ruled out.** The backtest matches Kalshi's
-1-minute candle bid/ask against the Binance spot at that timestamp. If
-Kalshi's quotes lag Binance by seconds, part of the measured edge is just
-Kalshi not having repriced yet, which would not survive real execution
-latency. This is the single most likely explanation for an edge of this
-size and is what the live run is there to settle.
+**Binance spot cannot resolve a 15-minute contract near its strike.** This is
+now a measured limit rather than a suspicion: the basis against Kalshi's own
+settlement index has a median of +5.2bp with a p10–p90 spread of ~17bp, while
+`sigma*sqrt(tau)` is only 20.6bp at 14 minutes. Binance's own 15-minute move
+disagrees with Kalshi's settlement 38% of the time for sub-2bp moves. Any
+future strategy on these contracts either needs the actual CF Benchmarks index
+or needs to stay well outside ~10bp of the strike — where the market prices
+the outcome correctly anyway.
 
-**Live validation has barely started.** The Fair Value NO-side signal is
-running live, but N is still near zero. Until it accumulates, every claim
-above is a backtest claim.
+**Backtests on short-dated contracts need an explicit no-lookahead audit.**
+The 60-second kline misalignment documented above produced six months of
+internally consistent, individually significant, completely fictitious
+results, and it survived a train/test split, an out-of-sample run, a
+fill-model correction and a cross-instrument screen. None of those catch a
+timestamp error, because all of them share it. What caught it was a live run
+disagreeing with the backtest, and then reading the lookup code rather than
+re-running it.
 
-**Favorite-Longshot's headline number predates the fill-model fix.** The
-N=2033 Feb–Mar 2026 result was computed with the mid-price bug present. It
-has not been re-run on that exact window with the corrected engine, so treat
-it as indicative rather than current.
+**No strategy in this repo currently has a demonstrated edge.** Momentum and
+MeanReversion were debunked, Longshot was stopped as unprofitable, and Fair
+Value is retracted above. What the repo demonstrates is the validation
+machinery, not a profitable system.
 
-**`compare_periods.py` is superseded and has its own sampling bug** — see the
-Period comparison note above. Don't cite numbers from it.
+**Favorite-Longshot's headline number also predates the lookahead fix** — but
+it reads Kalshi candles only and never touched the Binance price series, so it
+is affected by the fill-model correction and not by the lookahead one.
