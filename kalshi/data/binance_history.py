@@ -17,7 +17,16 @@ _API_DELAY_SEC = 0.05
 def fetch_klines_range(symbol: str, start_ms: int, end_ms: int, interval: str = "1m") -> list:
     """Fetch all 1-min klines for `symbol` between start_ms and end_ms (inclusive).
 
-    Returns a list of (open_time_ms, close_price) tuples, sorted ascending.
+    Returns a list of (observable_at_ms, close_price) tuples, sorted ascending,
+    where observable_at_ms is the kline's CLOSE time (open_time + interval) --
+    the first instant at which that close price could actually have been known.
+
+    Keying on open_time instead would backdate every price by one interval and
+    hand the caller up to 60s of lookahead: a kline opening at T does not close
+    until T+60s, so its close is a future price as far as T is concerned. For
+    15-minute contracts, where sigma*sqrt(tau) is only ~20 basis points, one
+    minute of foresight is a large edge and an entirely fictitious one.
+
     Paginates over Binance's 1000-candle-per-request limit.
     """
     out = []
@@ -43,7 +52,7 @@ def fetch_klines_range(symbol: str, start_ms: int, end_ms: int, interval: str = 
         for row in batch:
             open_time_ms = int(row[0])
             close_price  = float(row[4])
-            out.append((open_time_ms, close_price))
+            out.append((open_time_ms + interval_ms, close_price))
 
         last_open = int(batch[-1][0])
         if len(batch) < _MAX_PER_CALL or last_open <= cursor:
@@ -56,7 +65,12 @@ def fetch_klines_range(symbol: str, start_ms: int, end_ms: int, interval: str = 
 
 
 class PriceSeries:
-    """Sorted (timestamp_ms, price) series with no-lookahead lookups."""
+    """Sorted (observable_at_ms, price) series with no-lookahead lookups.
+
+    Each timestamp is when its price became *knowable*, not the start of the
+    bar it summarizes -- see fetch_klines_range(). Pass open times here and
+    every lookup silently reads one interval into the future.
+    """
 
     def __init__(self, points: list):
         self._points = sorted(points, key=lambda t: t[0])
@@ -70,7 +84,11 @@ class PriceSeries:
         return self._points[idx - 1][1]
 
     def trailing_closes(self, ts_ms: int, window_ms: int) -> list:
-        """Close prices in (ts_ms - window_ms, ts_ms], strictly no lookahead."""
+        """Close prices in [ts_ms - window_ms, ts_ms], strictly no lookahead.
+
+        Both ends are inclusive, so a 60-minute window yields 61 one-minute
+        closes -- i.e. the 60 log returns that window actually contains.
+        """
         idx = self._bisect_right(ts_ms)
         lo  = ts_ms - window_ms
         closes = []

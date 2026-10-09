@@ -201,7 +201,11 @@ class FairValueBacktestEngine:
         start  = min(opens)
         end    = max(closes)
 
-        start_ms = utc_timestamp(start) * 1000 - config.vol_window_minutes * 60_000
+        # One extra interval of lead-in: klines are keyed by their close time
+        # (see fetch_klines_range), so the earliest usable point lands one
+        # minute after start_ms. Without this the first markets scanned would
+        # price off a vol window short by one candle.
+        start_ms = utc_timestamp(start) * 1000 - (config.vol_window_minutes + 1) * 60_000
         end_ms   = utc_timestamp(end) * 1000
 
         print(f"  Fetching {symbol} Binance history: "
