@@ -115,6 +115,7 @@ Root-level scripts are thin CLI entry points over the package:
 | `backtest.py` | Favorite-Longshot backtest CLI |
 | `backtest_momentum.py` | Momentum backtest CLI |
 | `backtest_fair_value.py` | Fair-value backtest CLI |
+| `audit_fair_value.py` | Measures the lookahead and basis errors behind the retracted edge; writes the `results/audit_*.csv` the notebook reads |
 | `db_ingest.py` | Ingest run results into local SQLite database |
 | `market_analysis.py` | Standalone live market sampling tool (spreads, volatility) |
 | `run_fair_value_live.bat` | Ad-hoc live validation run (NO side, auto-ingests results) |
@@ -270,14 +271,18 @@ rescue it — every populated bucket is EV-negative (0–0.25: −0.0290,
 monotonically with `|d2|` (37.7% to 62.6%), but prices already reflect that,
 which is what an efficient market looks like.
 
-Replaying all 10,577 previously stored NO signals at their own original entry
+Replaying all 10,553 previously stored NO signals at their own original entry
 candles — same quotes, same outcomes, only the spot/vol lookup changed — gives
 the same answer from the other direction:
 
 | | signals still clearing threshold | claimed | realized | win rate | 95% CI |
 |---|---|---|---|---|---|
-| with lookahead | 100% | +0.103 | +0.106 | 58.4% | — |
-| without lookahead | 29.3% | +0.076 | +0.043 | 47.8% | [46.1%, 49.6%] |
+| with lookahead | 100% | +0.103 | +0.105 | 58.4% | — |
+| without lookahead | 29.3% | +0.075 | +0.045 | 47.7% | [46.0%, 49.5%] |
+
+Reproduce with `python audit_fair_value.py results/july_*.csv
+results/fv_month_*.csv` — it writes `results/audit_lookahead.csv`,
+`results/audit_basis.csv` and `results/audit_settlement_agreement.csv`.
 
 The top row is the instructive one: claimed and realized edge agreed to within
 0.003. The model looked beautifully calibrated because it genuinely knew the
@@ -293,10 +298,11 @@ index's value at market open as `floor_strike`. The basis against the Binance
 proxy is therefore directly measurable with no external data source:
 `10000 * (binance_at_open / floor_strike - 1)`.
 
-Over 43,685 signals: median **+5.2bp**, p10 −3.0bp, p90 +13.8bp. A ~17bp
+Over 43,858 signals: median **+5.2bp**, p10 −3.0bp, p90 +13.5bp. A ~16bp
 spread plus a systematic +5bp offset, against a 20.6bp denominator. The offset
 alone biases d2 by +0.25 and P(yes) upward by ~10pp, matching the measured
-−13pp YES-side overconfidence in both direction and magnitude.
+−13pp YES-side overconfidence in both direction and magnitude. The offset is
+remarkably stable across series: +4.7bp (ETH) to +6.6bp (SOL).
 
 Anchoring was validated two ways: the derived market-open times land on a
 15-minute boundary in 100% of rows, and the basis spread is minimal at offset 0
@@ -309,12 +315,12 @@ against how Kalshi actually settled:
 
 | \|Binance move\| | N | disagreement |
 |---|---|---|
-| 0–2bp | 4,664 | **38.1%** |
-| 2–5bp | 5,930 | 15.4% |
-| 5–10bp | 8,884 | 4.8% |
-| 10–20bp | 11,050 | 1.0% |
-| 20–40bp | 8,442 | 0.2% |
-| 40bp+ | 4,715 | 0.1% |
+| 0–2bp | 4,215 | **36.1%** |
+| 2–5bp | 6,125 | 15.3% |
+| 5–10bp | 9,089 | 4.7% |
+| 10–20bp | 11,208 | 1.0% |
+| 20–40bp | 8,498 | 0.2% |
+| 40bp+ | 4,723 | 0.1% |
 
 Near the money the proxy carries almost no information about the payoff, and
 that is exactly where the signals sit. This is not a tuning problem: no model
@@ -446,9 +452,9 @@ differently next time.
 
 **Binance spot cannot resolve a 15-minute contract near its strike.** This is
 now a measured limit rather than a suspicion: the basis against Kalshi's own
-settlement index has a median of +5.2bp with a p10–p90 spread of ~17bp, while
+settlement index has a median of +5.2bp with a p10–p90 spread of ~16bp, while
 `sigma*sqrt(tau)` is only 20.6bp at 14 minutes. Binance's own 15-minute move
-disagrees with Kalshi's settlement 38% of the time for sub-2bp moves. Any
+disagrees with Kalshi's settlement 36% of the time for sub-2bp moves. Any
 future strategy on these contracts either needs the actual CF Benchmarks index
 or needs to stay well outside ~10bp of the strike — where the market prices
 the outcome correctly anyway.
