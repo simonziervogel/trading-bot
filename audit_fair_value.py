@@ -17,12 +17,13 @@ they need no Kalshi calls:
               Kalshi actually settled, binned by the size of that move.
 
 Usage:
+    python audit_fair_value.py --out-dir data data/fair_value/with_lookahead/2026-*.csv.gz
     python audit_fair_value.py results/july_KXBTC15M.csv results/fv_month_2026-01.csv
-    python audit_fair_value.py --out-dir results results/july_*.csv
 """
 
 import argparse
 import csv
+import gzip
 import math
 import os
 from collections import defaultdict
@@ -82,7 +83,8 @@ def _load_rows(paths: list) -> dict:
     """Group deduplicated observations by series, auditable series only."""
     seen, by_series = set(), defaultdict(list)
     for path in paths:
-        with open(path, newline="", encoding="utf-8") as f:
+        opener = gzip.open if str(path).endswith(".gz") else open
+        with opener(path, "rt", newline="", encoding="utf-8") as f:
             for r in csv.DictReader(f):
                 if r.get("series") not in _AUDITABLE:
                     continue

@@ -12,9 +12,10 @@ REM
 REM Duration is deliberately >= ~1h: with a 16-minute entry cutoff, shorter
 REM sessions spend most of their time not entering anything.
 
-cd /d "C:\Users\simon\trading-bot"
+REM %~dp0 is this script's own folder, so it runs wherever the repo lives.
+cd /d "%~dp0"
 
-"C:\Users\simon\trading-bot\venv\Scripts\python.exe" -u runner.py ^
+"%~dp0venv\Scripts\python.exe" -u runner.py ^
     --strategy fair_value ^
     --duration-minutes 120 ^
     --fair-value-no-side-only ^
@@ -24,4 +25,4 @@ cd /d "C:\Users\simon\trading-bot"
     --fair-value-vol-window 60 ^
     --entry-cutoff-minutes 16
 
-"C:\Users\simon\trading-bot\venv\Scripts\python.exe" db_ingest.py --all
+"%~dp0venv\Scripts\python.exe" db_ingest.py --all
