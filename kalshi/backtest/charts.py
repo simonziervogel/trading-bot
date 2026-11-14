@@ -102,8 +102,7 @@ def bucket_chart(obs: list, title: str = "NO Win Rate vs Implied by YES Bucket")
                markeredgecolor=S.SURFACE, markeredgewidth=1.2, label="observed"),
         Line2D([0], [0], marker="|", color=S.INK, linestyle="none", markersize=10,
                markeredgewidth=1.6, label="price paid (break-even before fees)"),
-    ], loc="lower right", bbox_to_anchor=(1.0, 1.0), ncol=2, handlelength=1.6,
-        columnspacing=1.8, borderaxespad=0.3)
+    ], loc="lower right", ncol=1, handlelength=1.6, borderaxespad=0.6)
     fig.tight_layout(rect=(0, 0, 0.93, 1))
     return fig
 
