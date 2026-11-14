@@ -1,0 +1,7 @@
+series,n,n_kept,signal_rate_kept,claim_with_lookahead,realized_with_lookahead,win_rate_with_lookahead,wins_with_lookahead,claim_no_lookahead,realized_no_lookahead,win_rate_no_lookahead,wins_no_lookahead,unreconstructable
+KXBNB15M,130,5,0.0385,0.0999,0.2057,0.7231,94,0.0536,0.164,0.6,3,0
+KXBTC15M,4745,1638,0.3452,0.1053,0.0992,0.5844,2773,0.0858,0.033,0.4853,795,0
+KXETH15M,5043,1324,0.2625,0.1011,0.1075,0.5877,2964,0.0662,0.0484,0.4819,638,0
+KXSOL15M,133,5,0.0376,0.0916,0.1204,0.6241,83,0.058,0.072,0.4,2,88
+KXZEC15M,502,119,0.2371,0.0973,0.1138,0.498,250,0.0636,0.0925,0.3277,39,0
+POOLED,10553,3091,0.2929,0.1027,0.1054,0.5841,6164,0.0765,0.0422,0.4778,1477,88

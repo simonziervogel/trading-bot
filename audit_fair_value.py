@@ -17,12 +17,13 @@ they need no Kalshi calls:
               Kalshi actually settled, binned by the size of that move.
 
 Usage:
+    python audit_fair_value.py --out-dir data data/fair_value/with_lookahead/2026-*.csv.gz
     python audit_fair_value.py results/july_KXBTC15M.csv results/fv_month_2026-01.csv
-    python audit_fair_value.py --out-dir results results/july_*.csv
 """
 
 import argparse
 import csv
+import gzip
 import math
 import os
 from collections import defaultdict
@@ -82,7 +83,8 @@ def _load_rows(paths: list) -> dict:
     """Group deduplicated observations by series, auditable series only."""
     seen, by_series = set(), defaultdict(list)
     for path in paths:
-        with open(path, newline="", encoding="utf-8") as f:
+        opener = gzip.open if str(path).endswith(".gz") else open
+        with opener(path, "rt", newline="", encoding="utf-8") as f:
             for r in csv.DictReader(f):
                 if r.get("series") not in _AUDITABLE:
                     continue
@@ -111,7 +113,7 @@ def _price_series(series: str, rows: list) -> tuple:
 
 def audit_lookahead(by_series: dict, cache: dict) -> list:
     """Realized vs claimed edge on NO signals, with and without the lookahead."""
-    out = []
+    out, total = [], defaultdict(float)
     for series, rows in sorted(by_series.items()):
         no_rows = [r for r in rows if r["side"] == "no"]
         if not no_rows:
@@ -162,20 +164,33 @@ def audit_lookahead(by_series: dict, cache: dict) -> list:
 
         if not a["n"]:
             continue
-        n, k = a["n"], a["kept"] or 1
-        out.append({
-            "series": series,
-            "n": int(n),
-            "signal_rate_kept":        round(a["kept"] / n, 4),
-            "claim_with_lookahead":    round(a["claim_buggy"] / n, 4),
-            "realized_with_lookahead": round(a["real_buggy"] / n, 4),
-            "win_rate_with_lookahead": round(a["wins_buggy"] / n, 4),
-            "claim_no_lookahead":      round(a["claim_settled"] / k, 4),
-            "realized_no_lookahead":   round(a["real_settled"] / k, 4),
-            "win_rate_no_lookahead":   round(a["wins_settled"] / k, 4),
-            "unreconstructable":       int(a["unreconstructable"]),
-        })
+        out.append(_lookahead_row(series, a))
+        for key, value in a.items():
+            total[key] += value
+
+    # Pooled from the raw counts, not from the rounded per-series rates.
+    if total["n"]:
+        out.append(_lookahead_row("POOLED", total))
     return out
+
+
+def _lookahead_row(series: str, a: dict) -> dict:
+    n, k = a["n"], a["kept"] or 1
+    return {
+        "series": series,
+        "n": int(n),
+        "n_kept": int(a["kept"]),
+        "signal_rate_kept":        round(a["kept"] / n, 4),
+        "claim_with_lookahead":    round(a["claim_buggy"] / n, 4),
+        "realized_with_lookahead": round(a["real_buggy"] / n, 4),
+        "win_rate_with_lookahead": round(a["wins_buggy"] / n, 4),
+        "wins_with_lookahead":     int(a["wins_buggy"]),
+        "claim_no_lookahead":      round(a["claim_settled"] / k, 4),
+        "realized_no_lookahead":   round(a["real_settled"] / k, 4),
+        "win_rate_no_lookahead":   round(a["wins_settled"] / k, 4),
+        "wins_no_lookahead":       int(a["wins_settled"]),
+        "unreconstructable":       int(a["unreconstructable"]),
+    }
 
 
 def audit_basis(by_series: dict, cache: dict) -> tuple:

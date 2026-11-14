@@ -2,6 +2,7 @@
 
 Sibling of kalshi.backtest.charts (which is Longshot/NO-only); see
 kalshi.backtest.common_metrics for why this is a separate, additive module.
+Styling comes from kalshi.report.style, shared with every other figure.
 """
 
 
@@ -17,6 +18,8 @@ def equity_curve(obs: list, title: str = "Equity Curve"):
     Returns a matplotlib Figure.
     """
     import matplotlib.pyplot as plt
+    from kalshi.report import style as S
+    S.apply()
 
     if not obs:
         fig, ax = plt.subplots()
@@ -34,17 +37,13 @@ def equity_curve(obs: list, title: str = "Equity Curve"):
         equity += (1.0 - price) if won else -price
         ys.append(equity)
 
-    fig, ax = plt.subplots(figsize=(12, 4))
-    ax.plot(range(len(ys)), ys, linewidth=1.2, color="#2196F3")
-    ax.axhline(0, color="gray", linewidth=0.7, linestyle="--")
-    ax.fill_between(range(len(ys)), ys, 0,
-                    where=[y >= 0 for y in ys], alpha=0.15, color="#4CAF50")
-    ax.fill_between(range(len(ys)), ys, 0,
-                    where=[y < 0 for y in ys], alpha=0.15, color="#F44336")
-    ax.set_title(title, fontsize=13, fontweight="bold")
-    ax.set_xlabel("Trade number")
-    ax.set_ylabel("Cumulative PnL (contracts)")
-    ax.grid(axis="y", linestyle="--", alpha=0.4)
+    fig, ax = plt.subplots(figsize=(S.WIDTH_IN, 3.6))
+    xs = range(len(ys))
+    ax.fill_between(xs, ys, 0, color=S.ORANGE, alpha=0.10, linewidth=0)
+    ax.plot(xs, ys, color=S.ORANGE)
+    ax.axhline(0, color=S.INK_2, linewidth=0.9)
+    S.style_axes(ax, title=title, xlabel="trade number",
+                 ylabel="cumulative PnL, $ per contract (before fees)")
     fig.tight_layout()
     return fig
 
@@ -56,6 +55,6 @@ def save_equity_curve(obs: list, path: str, title: str = "Equity Curve") -> None
     out = Path(path)
     out.parent.mkdir(parents=True, exist_ok=True)
     fig = equity_curve(obs, title=title)
-    fig.savefig(out, dpi=150, bbox_inches="tight")
+    fig.savefig(out, dpi=200)
     plt.close(fig)
     print(f"  Chart saved -> {out}")

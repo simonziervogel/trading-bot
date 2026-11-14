@@ -1,0 +1,7 @@
+series,n,basis_p10_bp,basis_median_bp,basis_p90_bp,median_abs_basis_bp,implausible_strike_rows
+KXBNB15M,2361,1.95,5.62,9.77,5.63,0
+KXBTC15M,19337,-3.02,5.02,13.77,5.66,2
+KXETH15M,17908,-3.6,4.7,13.7,5.58,3
+KXSOL15M,2364,2.58,6.62,11.54,6.64,0
+KXZEC15M,1888,-2.14,6.16,13.53,6.6,0
+POOLED,43858,-2.96,5.2,13.49,5.76,
